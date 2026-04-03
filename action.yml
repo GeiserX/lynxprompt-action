@@ -1,0 +1,52 @@
+name: 'LynxPrompt Action'
+description: 'Sync, validate, generate, and diff AI IDE configuration files with LynxPrompt'
+author: 'GeiserX'
+
+branding:
+  icon: 'layers'
+  color: 'purple'
+
+inputs:
+  mode:
+    description: 'Action mode: sync, validate, generate, or diff'
+    required: true
+  token:
+    description: 'LynxPrompt API token'
+    required: true
+  api-url:
+    description: 'LynxPrompt API URL'
+    required: false
+    default: 'https://lynxprompt.com'
+  files:
+    description: 'Glob pattern for config files to process'
+    required: false
+    default: '**/{AGENTS,CLAUDE,AIDER}.md,**/.github/copilot-instructions.md,**/.windsurfrules,**/.cursor/rules/**/*.mdc'
+  visibility:
+    description: 'Blueprint visibility when syncing (PRIVATE, TEAM, or PUBLIC)'
+    required: false
+    default: 'PRIVATE'
+  platforms:
+    description: 'Required platforms for validate mode (comma-separated, e.g. cursor,claude-code,copilot)'
+    required: false
+  fail-on-drift:
+    description: 'Fail the check if drift is detected (diff mode)'
+    required: false
+    default: 'false'
+  commit-changes:
+    description: 'Auto-commit generated files (generate mode)'
+    required: false
+    default: 'false'
+
+outputs:
+  synced-count:
+    description: 'Number of blueprints synced (sync mode)'
+  validation-passed:
+    description: 'Whether validation passed (validate mode)'
+  generated-count:
+    description: 'Number of files generated (generate mode)'
+  drift-detected:
+    description: 'Whether drift was detected (diff mode)'
+
+runs:
+  using: 'node20'
+  main: 'dist/index.js'
