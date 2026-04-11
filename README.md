@@ -2,6 +2,9 @@
   <img src="docs/images/banner.svg" alt="LynxPrompt Action banner" width="900"/>
 </p>
 
+[![CI](https://github.com/GeiserX/lynxprompt-action/actions/workflows/ci.yml/badge.svg)](https://github.com/GeiserX/lynxprompt-action/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/GeiserX/lynxprompt-action/graph/badge.svg)](https://codecov.io/gh/GeiserX/lynxprompt-action)
+
 # LynxPrompt Action
 
 A GitHub Action to sync, validate, generate, and diff AI IDE configuration files with [LynxPrompt](https://lynxprompt.com) -- a self-hostable platform for managing AI coding tool configs across 30+ tools.
