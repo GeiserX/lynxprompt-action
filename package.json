@@ -6,7 +6,10 @@
   "scripts": {
     "build": "tsc && ncc build lib/main.js -o dist --source-map --license licenses.txt",
     "lint": "eslint src/**/*.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage"
   },
   "repository": {
     "type": "git",
@@ -32,6 +35,8 @@
   "devDependencies": {
     "@types/node": "^20.19.39",
     "@vercel/ncc": "^0.38.3",
-    "typescript": "^5.7.0"
+    "@vitest/coverage-v8": "^4.1.4",
+    "typescript": "^5.7.0",
+    "vitest": "^4.1.4"
   }
 }
