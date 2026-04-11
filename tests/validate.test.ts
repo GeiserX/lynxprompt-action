@@ -1,109 +1,406 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-// Test the validateFile function by importing it indirectly through the module
-// Since validateFile is private, we test it through the validation logic patterns
+// Mock external dependencies before importing the module under test
+vi.mock('@actions/core', () => ({
+  info: vi.fn(),
+  error: vi.fn(),
+  warning: vi.fn(),
+  debug: vi.fn(),
+  setOutput: vi.fn(),
+  setFailed: vi.fn(),
+}));
 
-describe('validation rules', () => {
-  // These test the validation logic patterns used in validate.ts
+vi.mock('../src/utils/detector', () => ({
+  parseFilePatterns: vi.fn((input: string) =>
+    input
+      .split(/[,\n]/)
+      .map((p: string) => p.trim())
+      .filter((p: string) => p.length > 0),
+  ),
+  detectConfigFiles: vi.fn(),
+}));
 
+vi.mock('../src/utils/comment', () => ({
+  formatValidationComment: vi.fn(
+    (_results: unknown[], allPassed: boolean) =>
+      allPassed ? 'all passed' : 'issues found',
+  ),
+  upsertPrComment: vi.fn(),
+}));
+
+import * as core from '@actions/core';
+import { validateFile, runValidate } from '../src/modes/validate';
+import { detectConfigFiles } from '../src/utils/detector';
+import { upsertPrComment } from '../src/utils/comment';
+import { ActionInputs, DetectedFile } from '../src/types';
+import { LynxPromptClient } from '../src/api';
+
+describe('validateFile', () => {
   describe('content length checks', () => {
-    it('detects empty content', () => {
-      const content = '';
-      expect(content.trim().length).toBe(0);
+    it('fails on empty content', () => {
+      const result = validateFile('CLAUDE.md', '');
+      expect(result.passed).toBe(false);
+      expect(result.errors).toEqual(
+        expect.arrayContaining([expect.stringContaining('empty')]),
+      );
     });
 
-    it('detects short content', () => {
-      const content = 'short';
-      const MIN_CONTENT_LENGTH = 10;
-      expect(content.length).toBeLessThan(MIN_CONTENT_LENGTH);
+    it('fails on whitespace-only content', () => {
+      const result = validateFile('CLAUDE.md', '   \n  ');
+      expect(result.passed).toBe(false);
+      expect(result.errors).toEqual(
+        expect.arrayContaining([expect.stringContaining('empty')]),
+      );
     });
 
-    it('passes valid content', () => {
-      const content = '# AGENTS.md\n\nThis is a valid configuration file with enough content.';
-      const MIN_CONTENT_LENGTH = 10;
-      expect(content.trim().length).toBeGreaterThan(0);
-      expect(content.length).toBeGreaterThanOrEqual(MIN_CONTENT_LENGTH);
+    it('fails on content shorter than minimum length', () => {
+      const result = validateFile('CLAUDE.md', 'short');
+      expect(result.passed).toBe(false);
+      expect(result.errors).toEqual(
+        expect.arrayContaining([expect.stringContaining('too short')]),
+      );
+    });
+
+    it('passes valid content above minimum length', () => {
+      const result = validateFile(
+        'CLAUDE.md',
+        '# AGENTS.md\n\nThis is a valid configuration file with enough content.',
+      );
+      expect(result.passed).toBe(true);
+      expect(result.errors).toHaveLength(0);
     });
 
     it('warns on very large content', () => {
-      const MAX_CONTENT_LENGTH = 500_000;
-      const bigContent = 'x'.repeat(MAX_CONTENT_LENGTH + 1);
-      expect(bigContent.length).toBeGreaterThan(MAX_CONTENT_LENGTH);
+      const bigContent = 'x'.repeat(500_001);
+      const result = validateFile('CLAUDE.md', bigContent);
+      expect(result.passed).toBe(true);
+      expect(result.warnings).toEqual(
+        expect.arrayContaining([expect.stringContaining('very large')]),
+      );
     });
   });
 
   describe('markdown heading detection', () => {
-    it('detects h1 heading', () => {
-      const hasHeading = /^#{1,6}\s+.+/m.test('# Title\n\nContent');
-      expect(hasHeading).toBe(true);
+    it('does not warn when heading is present in .md file', () => {
+      const result = validateFile(
+        'AGENTS.md',
+        '# Title\n\nSome content here.',
+      );
+      expect(result.warnings).not.toEqual(
+        expect.arrayContaining([expect.stringContaining('heading')]),
+      );
     });
 
-    it('detects h2 heading', () => {
-      const hasHeading = /^#{1,6}\s+.+/m.test('## Subtitle\n\nContent');
-      expect(hasHeading).toBe(true);
+    it('warns when no heading found in .md file', () => {
+      const result = validateFile(
+        'AGENTS.md',
+        'No headings in this file at all.',
+      );
+      expect(result.warnings).toEqual(
+        expect.arrayContaining([expect.stringContaining('heading')]),
+      );
     });
 
-    it('does not match without space after #', () => {
-      const hasHeading = /^#{1,6}\s+.+/m.test('#NoSpace\n\nContent');
-      expect(hasHeading).toBe(false);
+    it('detects h2 headings', () => {
+      const result = validateFile(
+        'CLAUDE.md',
+        '## Subtitle\n\nSome content here.',
+      );
+      expect(result.warnings).not.toEqual(
+        expect.arrayContaining([expect.stringContaining('heading')]),
+      );
     });
 
-    it('matches heading in middle of content', () => {
-      const hasHeading = /^#{1,6}\s+.+/m.test('Some text\n\n## Heading\n\nMore text');
-      expect(hasHeading).toBe(true);
+    it('does not check headings in non-markdown files', () => {
+      const result = validateFile(
+        '.windsurfrules',
+        'No headings but this is not markdown.',
+      );
+      expect(result.warnings).not.toEqual(
+        expect.arrayContaining([expect.stringContaining('heading')]),
+      );
+    });
+
+    it('checks headings in .mdc files', () => {
+      const result = validateFile(
+        '.cursor/rules/test.mdc',
+        'No headings in this cursor rule file.',
+      );
+      expect(result.warnings).toEqual(
+        expect.arrayContaining([expect.stringContaining('heading')]),
+      );
     });
   });
 
   describe('placeholder detection', () => {
-    const placeholders = ['TODO', 'FIXME', 'INSERT HERE', 'PLACEHOLDER'];
-
-    it('detects TODO', () => {
-      const content = '# Config\n\nTODO: fill this in';
-      const found = placeholders.some((ph) => content.toUpperCase().includes(ph));
-      expect(found).toBe(true);
+    it('warns on TODO placeholder in markdown', () => {
+      const result = validateFile('AGENTS.md', '# Config\n\nTODO: fill this in');
+      expect(result.warnings).toEqual(
+        expect.arrayContaining([expect.stringContaining('TODO')]),
+      );
     });
 
-    it('detects FIXME case-insensitive', () => {
-      const content = '# Config\n\nfixme: something broken';
-      const found = placeholders.some((ph) => content.toUpperCase().includes(ph));
-      expect(found).toBe(true);
+    it('warns on FIXME case-insensitively', () => {
+      const result = validateFile(
+        'AGENTS.md',
+        '# Config\n\nfixme: something broken',
+      );
+      expect(result.warnings).toEqual(
+        expect.arrayContaining([expect.stringContaining('FIXME')]),
+      );
+    });
+
+    it('warns on INSERT HERE', () => {
+      const result = validateFile(
+        'CLAUDE.md',
+        '# Config\n\nInsert here your instructions',
+      );
+      expect(result.warnings).toEqual(
+        expect.arrayContaining([expect.stringContaining('INSERT HERE')]),
+      );
+    });
+
+    it('warns on PLACEHOLDER', () => {
+      const result = validateFile(
+        'CLAUDE.md',
+        '# Config\n\nThis is a placeholder text.',
+      );
+      expect(result.warnings).toEqual(
+        expect.arrayContaining([expect.stringContaining('PLACEHOLDER')]),
+      );
     });
 
     it('does not flag clean content', () => {
-      const content = '# Config\n\nThis is a proper configuration file.';
-      const found = placeholders.some((ph) => content.toUpperCase().includes(ph));
-      expect(found).toBe(false);
+      const result = validateFile(
+        'AGENTS.md',
+        '# Config\n\nThis is a proper configuration file.',
+      );
+      const placeholderWarnings = result.warnings.filter(
+        (w) =>
+          w.includes('TODO') ||
+          w.includes('FIXME') ||
+          w.includes('INSERT HERE') ||
+          w.includes('PLACEHOLDER'),
+      );
+      expect(placeholderWarnings).toHaveLength(0);
+    });
+
+    it('does not check placeholders in non-markdown files', () => {
+      const result = validateFile(
+        '.windsurfrules',
+        'TODO: this should not warn because not markdown.',
+      );
+      const placeholderWarnings = result.warnings.filter((w) =>
+        w.includes('TODO'),
+      );
+      expect(placeholderWarnings).toHaveLength(0);
     });
   });
 
   describe('sensitive data detection', () => {
-    const sensitivePatterns = [
-      /(?:api[_-]?key|secret|password|token)\s*[:=]\s*['"][^'"]{8,}/i,
-      /(?:sk-|ghp_|gho_|glpat-|xoxb-|xoxp-)[a-zA-Z0-9]{20,}/,
-    ];
-
-    it('detects API key pattern', () => {
-      const content = 'api_key = "abcdefghijklmnop"';
-      const found = sensitivePatterns.some((p) => p.test(content));
-      expect(found).toBe(true);
+    it('warns on API key pattern', () => {
+      const result = validateFile(
+        'AGENTS.md',
+        '# Config\n\napi_key = "abcdefghijklmnop"',
+      );
+      expect(result.warnings).toEqual(
+        expect.arrayContaining([expect.stringContaining('sensitive')]),
+      );
     });
 
-    it('detects GitHub token pattern', () => {
-      const content = 'ghp_1234567890abcdefghij1234567890ab';
-      const found = sensitivePatterns.some((p) => p.test(content));
-      expect(found).toBe(true);
+    it('warns on GitHub token pattern', () => {
+      const result = validateFile(
+        'AGENTS.md',
+        '# Config\n\nghp_1234567890abcdefghij1234567890ab',
+      );
+      expect(result.warnings).toEqual(
+        expect.arrayContaining([expect.stringContaining('sensitive')]),
+      );
     });
 
-    it('detects Slack token pattern', () => {
-      const content = 'xoxb-12345678901234567890abcde';
-      const found = sensitivePatterns.some((p) => p.test(content));
-      expect(found).toBe(true);
+    it('warns on Slack token pattern', () => {
+      const result = validateFile(
+        'AGENTS.md',
+        '# Config\n\nxoxb-12345678901234567890abcde',
+      );
+      expect(result.warnings).toEqual(
+        expect.arrayContaining([expect.stringContaining('sensitive')]),
+      );
     });
 
     it('does not flag normal content', () => {
-      const content = '# Config\n\nUse your token from the dashboard.';
-      const found = sensitivePatterns.some((p) => p.test(content));
-      expect(found).toBe(false);
+      const result = validateFile(
+        'AGENTS.md',
+        '# Config\n\nUse your token from the dashboard.',
+      );
+      const sensitiveWarnings = result.warnings.filter((w) =>
+        w.includes('sensitive'),
+      );
+      expect(sensitiveWarnings).toHaveLength(0);
     });
+  });
+
+  describe('result structure', () => {
+    it('returns correct file path', () => {
+      const result = validateFile(
+        'some/path/CLAUDE.md',
+        '# Valid\n\nContent here.',
+      );
+      expect(result.file).toBe('some/path/CLAUDE.md');
+    });
+
+    it('passed is true when no errors', () => {
+      const result = validateFile('AGENTS.md', '# Valid\n\nContent here.');
+      expect(result.passed).toBe(true);
+      expect(result.errors).toHaveLength(0);
+    });
+
+    it('passed is false when errors exist', () => {
+      const result = validateFile('AGENTS.md', '');
+      expect(result.passed).toBe(false);
+      expect(result.errors.length).toBeGreaterThan(0);
+    });
+  });
+});
+
+describe('runValidate', () => {
+  const mockClient = {} as LynxPromptClient;
+
+  const baseInputs: ActionInputs = {
+    mode: 'validate',
+    token: 'lp_test',
+    apiUrl: 'https://lynxprompt.com',
+    files: '**/{AGENTS,CLAUDE}.md',
+    visibility: 'PRIVATE',
+    platforms: [],
+    failOnDrift: false,
+    commitChanges: false,
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('validates detected files and posts comment', async () => {
+    const mockFiles: DetectedFile[] = [
+      {
+        path: '/workspace/AGENTS.md',
+        relativePath: 'AGENTS.md',
+        type: 'AGENTS_MD',
+        content: '# Agents\n\nValid content here for testing.',
+        blueprintName: 'AGENTS.md',
+      },
+    ];
+    vi.mocked(detectConfigFiles).mockResolvedValue(mockFiles);
+
+    await runValidate(mockClient, baseInputs, '/workspace');
+
+    expect(core.setOutput).toHaveBeenCalledWith('validation-passed', true);
+    expect(core.setFailed).not.toHaveBeenCalled();
+    expect(upsertPrComment).toHaveBeenCalled();
+  });
+
+  it('fails when a file has validation errors', async () => {
+    const mockFiles: DetectedFile[] = [
+      {
+        path: '/workspace/CLAUDE.md',
+        relativePath: 'CLAUDE.md',
+        type: 'CLAUDE_MD',
+        content: '',
+        blueprintName: 'CLAUDE.md',
+      },
+    ];
+    vi.mocked(detectConfigFiles).mockResolvedValue(mockFiles);
+
+    await runValidate(mockClient, baseInputs, '/workspace');
+
+    expect(core.setOutput).toHaveBeenCalledWith('validation-passed', false);
+    expect(core.setFailed).toHaveBeenCalled();
+  });
+
+  it('fails when required platform is missing', async () => {
+    vi.mocked(detectConfigFiles).mockResolvedValue([]);
+
+    const inputs: ActionInputs = {
+      ...baseInputs,
+      platforms: ['cursor'],
+    };
+
+    await runValidate(mockClient, inputs, '/workspace');
+
+    expect(core.setOutput).toHaveBeenCalledWith('validation-passed', false);
+    expect(core.setFailed).toHaveBeenCalled();
+  });
+
+  it('passes when required platform is present', async () => {
+    const mockFiles: DetectedFile[] = [
+      {
+        path: '/workspace/.cursor/rules/main.mdc',
+        relativePath: '.cursor/rules/main.mdc',
+        type: 'CURSOR_RULES',
+        content: '# Cursor Rules\n\nValid content here for testing.',
+        blueprintName: '.cursor/rules/main.mdc',
+      },
+    ];
+    vi.mocked(detectConfigFiles).mockResolvedValue(mockFiles);
+
+    const inputs: ActionInputs = {
+      ...baseInputs,
+      platforms: ['cursor'],
+    };
+
+    await runValidate(mockClient, inputs, '/workspace');
+
+    expect(core.setOutput).toHaveBeenCalledWith('validation-passed', true);
+    expect(core.setFailed).not.toHaveBeenCalled();
+  });
+
+  it('warns on unknown platform and continues', async () => {
+    vi.mocked(detectConfigFiles).mockResolvedValue([]);
+
+    const inputs: ActionInputs = {
+      ...baseInputs,
+      platforms: ['unknown-platform'],
+    };
+
+    await runValidate(mockClient, inputs, '/workspace');
+
+    expect(core.warning).toHaveBeenCalledWith(
+      expect.stringContaining('Unknown platform'),
+    );
+  });
+
+  it('handles multiple files with mixed results', async () => {
+    const mockFiles: DetectedFile[] = [
+      {
+        path: '/workspace/AGENTS.md',
+        relativePath: 'AGENTS.md',
+        type: 'AGENTS_MD',
+        content: '# Agents\n\nValid content here.',
+        blueprintName: 'AGENTS.md',
+      },
+      {
+        path: '/workspace/CLAUDE.md',
+        relativePath: 'CLAUDE.md',
+        type: 'CLAUDE_MD',
+        content: '',
+        blueprintName: 'CLAUDE.md',
+      },
+    ];
+    vi.mocked(detectConfigFiles).mockResolvedValue(mockFiles);
+
+    await runValidate(mockClient, baseInputs, '/workspace');
+
+    expect(core.setOutput).toHaveBeenCalledWith('validation-passed', false);
+    expect(core.setFailed).toHaveBeenCalled();
+  });
+
+  it('passes with no files and no required platforms', async () => {
+    vi.mocked(detectConfigFiles).mockResolvedValue([]);
+
+    await runValidate(mockClient, baseInputs, '/workspace');
+
+    expect(core.setOutput).toHaveBeenCalledWith('validation-passed', true);
+    expect(core.setFailed).not.toHaveBeenCalled();
   });
 });
