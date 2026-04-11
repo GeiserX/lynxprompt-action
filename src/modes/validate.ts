@@ -94,7 +94,7 @@ export async function runValidate(
 /**
  * Validate a single file for common issues.
  */
-function validateFile(relativePath: string, content: string): ValidationResult {
+export function validateFile(relativePath: string, content: string): ValidationResult {
   const errors: string[] = [];
   const warnings: string[] = [];
 
