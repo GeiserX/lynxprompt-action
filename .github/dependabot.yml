@@ -26,6 +26,7 @@ updates:
     ignore:
       - dependency-name: "*"
         update-types: ["version-update:semver-major"]
+      - dependency-name: "@actions/glob"
 
   - package-ecosystem: "github-actions"
     directory: "/"
