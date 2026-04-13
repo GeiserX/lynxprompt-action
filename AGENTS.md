@@ -32,6 +32,10 @@ npm run build  # tsc + ncc bundle → dist/index.js
 
 The `dist/` directory is committed to the repo (required for GitHub Actions).
 
+## Known Workarounds
+
+- **`@actions/glob` pinned to 0.5.1** — version 0.6.x ships an ESM-only exports map (`"import"` only, no `"require"`) that `@vercel/ncc` cannot resolve when bundling to CJS. Dependabot is configured to ignore this package. **Periodically check if ncc gains ESM exports support or if `@actions/glob` adds a CJS export — then unpin and remove the Dependabot ignore rule.**
+
 ## Testing
 
 Test locally with `act` or by referencing a branch in a workflow:
