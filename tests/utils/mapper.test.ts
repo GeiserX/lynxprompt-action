@@ -98,4 +98,8 @@ describe('typeToDefaultPath', () => {
   it('falls back to name for CUSTOM type', () => {
     expect(typeToDefaultPath('CUSTOM' as any, 'my-file.txt')).toBe('my-file.txt');
   });
+
+  it('falls back to unknown-config.md for CUSTOM type without name', () => {
+    expect(typeToDefaultPath('CUSTOM' as any)).toBe('unknown-config.md');
+  });
 });
