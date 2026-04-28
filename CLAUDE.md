@@ -20,7 +20,7 @@ This is a GitHub Action (Node 20, TypeScript) that integrates LynxPrompt with CI
 - All inputs come from `action.yml` via `@actions/core`
 - Token format: `lp_` prefix + 64 hex chars
 - API URL defaults to `https://lynxprompt.com`, overridable for self-hosted
-- Config file detection uses glob patterns (default covers AGENTS.md, CLAUDE.md, .cursor/rules/, copilot-instructions.md, .windsurfrules, AIDER.md)
+- Config file detection uses glob patterns (default covers CLAUDE.md, CLAUDE.md, .cursor/rules/, copilot-instructions.md, .windsurfrules, AIDER.md)
 - PR comments use `@actions/github` with a marker comment for idempotent updates
 
 ## Build
