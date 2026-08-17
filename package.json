@@ -33,7 +33,7 @@
   },
   "devDependencies": {
     "@types/node": "^20.19.43",
-    "@vercel/ncc": "^0.44.1",
+    "@vercel/ncc": "^0.45.0",
     "@vitest/coverage-v8": "^4.1.10",
     "typescript": "^5.7.0",
     "vitest": "^4.1.4"
