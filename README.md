@@ -46,4 +46,4 @@ Create an API token in LynxPrompt (format: `lp_<64_hex_chars>`), save it as the 
 
 ## License
 
-[GPL-3.0](LICENSE)
+[GPL-3.0-or-later](LICENSE)
