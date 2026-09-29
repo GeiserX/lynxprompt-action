@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/images/banner.svg" alt="LynxPrompt Action banner" width="900"/>
+  <img src="docs/images/banner.svg" alt="LynxPrompt Action" width="900"/>
 </p>
 
 [![Release](https://img.shields.io/github/v/release/GeiserX/lynxprompt-action?style=flat-square)](https://github.com/GeiserX/lynxprompt-action/releases)
@@ -9,7 +9,7 @@
 
 # LynxPrompt Action
 
-A GitHub Action to sync, validate, generate, and diff AI IDE configuration files with [LynxPrompt](https://lynxprompt.com) -- a self-hostable platform for managing AI coding tool configs across 30+ tools.
+A GitHub Action to sync, validate, generate, and diff AI IDE configuration files with [LynxPrompt](https://lynxprompt.com) -- a self-hostable platform for managing the configs of [many AI coding tools](https://github.com/GeiserX/LynxPrompt/blob/main/docs/features.md).
 
 Supported config files include `AGENTS.md`, `CLAUDE.md`, `.cursor/rules/`, `.github/copilot-instructions.md`, `.windsurfrules`, `AIDER.md`, and more.
 
@@ -34,15 +34,17 @@ Create an API token in LynxPrompt (format: `lp_<64_hex_chars>`), save it as the 
     token: ${{ secrets.LYNXPROMPT_TOKEN }}
 ```
 
+The other modes (validate on pull requests, generate on a schedule, diff with a drift report) are in [Usage](docs/usage.md).
+
 ## Documentation
 
+- [Configuration](docs/configuration.md): inputs, default file patterns, outputs, supported platforms
 - [Usage](docs/usage.md): a full workflow per mode, monorepos, custom file patterns, permissions, self-hosted LynxPrompt
-- [Reference](docs/reference.md): inputs, default file patterns, outputs, supported platforms
 - [Development](docs/development.md): building the bundle in `dist/index.js`
 
 ## Related projects
 
-[LynxPrompt](https://github.com/GeiserX/LynxPrompt), [lynxprompt-vscode](https://github.com/GeiserX/lynxprompt-vscode), [lynxprompt-mcp](https://github.com/GeiserX/lynxprompt-mcp), [n8n-nodes-lynxprompt](https://github.com/GeiserX/n8n-nodes-lynxprompt), [homebrew-lynxprompt](https://github.com/GeiserX/homebrew-lynxprompt).
+[LynxPrompt](https://github.com/GeiserX/LynxPrompt), [lynxprompt-vscode](https://github.com/GeiserX/lynxprompt-vscode), [lynxprompt-mcp](https://github.com/GeiserX/lynxprompt-mcp), [homebrew-lynxprompt](https://github.com/GeiserX/homebrew-lynxprompt).
 
 ## License
 
