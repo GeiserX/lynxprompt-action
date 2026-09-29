@@ -2,7 +2,9 @@
   <img src="docs/images/banner.svg" alt="LynxPrompt Action banner" width="900"/>
 </p>
 
+[![Release](https://img.shields.io/github/v/release/GeiserX/lynxprompt-action?style=flat-square)](https://github.com/GeiserX/lynxprompt-action/releases)
 [![CI](https://github.com/GeiserX/lynxprompt-action/actions/workflows/ci.yml/badge.svg)](https://github.com/GeiserX/lynxprompt-action/actions/workflows/ci.yml)
+[![License](https://img.shields.io/github/license/GeiserX/lynxprompt-action?style=flat-square)](LICENSE)
 [![codecov](https://codecov.io/gh/GeiserX/lynxprompt-action/graph/badge.svg)](https://codecov.io/gh/GeiserX/lynxprompt-action)
 
 # LynxPrompt Action
@@ -13,20 +15,17 @@ Supported config files include `AGENTS.md`, `CLAUDE.md`, `.cursor/rules/`, `.git
 
 ## Features
 
-| Mode | Description | Trigger |
-|------|-------------|---------|
-| **sync** | Upload local AI config files as blueprints to LynxPrompt | Push to main |
-| **validate** | Check that AI config files are present and well-formed | Pull request |
-| **generate** | Pull blueprints from LynxPrompt and write them to the repo | Schedule / manual |
-| **diff** | Compare local configs with cloud blueprints and report drift | Pull request |
+- **sync**: upload local AI config files as blueprints to LynxPrompt, e.g. on push to main.
+- **validate**: check that AI config files are present and well-formed, and require chosen platforms, on pull requests.
+- **generate**: pull blueprints from LynxPrompt and write them to the repo, optionally committing them, on a schedule.
+- **diff**: compare local configs with cloud blueprints and post a drift report on the PR, optionally failing the check.
+- Finds nested config files in monorepos and names each blueprint by its relative path.
+- Custom glob patterns through the `files` input.
+- Works with lynxprompt.com or a self-hosted instance through `api-url`.
 
-## Quick Start
+## Quick start
 
-### 1. Get a LynxPrompt API Token
-
-Sign in to your LynxPrompt instance and create an API token (format: `lp_<64_hex_chars>`). Add it as a repository secret named `LYNXPROMPT_TOKEN`.
-
-### 2. Add to Your Workflow
+Create an API token in LynxPrompt (format: `lp_<64_hex_chars>`), save it as the repository secret `LYNXPROMPT_TOKEN`, and add:
 
 ```yaml
 - uses: GeiserX/lynxprompt-action@v1
@@ -35,245 +34,16 @@ Sign in to your LynxPrompt instance and create an API token (format: `lp_<64_hex
     token: ${{ secrets.LYNXPROMPT_TOKEN }}
 ```
 
-## Usage Examples
+## Documentation
 
-### Sync Configs to LynxPrompt on Push
+- [Usage](docs/usage.md): a full workflow per mode, monorepos, custom file patterns, permissions, self-hosted LynxPrompt
+- [Reference](docs/reference.md): inputs, default file patterns, outputs, supported platforms
+- [Development](docs/development.md): building the bundle in `dist/index.js`
 
-Upload all AI configuration files as blueprints whenever you push to the default branch.
+## Related projects
 
-```yaml
-name: Sync AI Configs
-on:
-  push:
-    branches: [main]
-    paths:
-      - 'AGENTS.md'
-      - 'CLAUDE.md'
-      - '.cursor/rules/**'
-      - '.github/copilot-instructions.md'
-      - '.windsurfrules'
-      - 'AIDER.md'
-
-jobs:
-  sync:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: GeiserX/lynxprompt-action@v1
-        with:
-          mode: sync
-          token: ${{ secrets.LYNXPROMPT_TOKEN }}
-          visibility: PRIVATE
-```
-
-### Validate Configs on Pull Request
-
-Check that AI config files are present and well-formed on every PR. Require specific platforms to be configured.
-
-```yaml
-name: Validate AI Configs
-on:
-  pull_request:
-    branches: [main]
-
-jobs:
-  validate:
-    runs-on: ubuntu-latest
-    permissions:
-      pull-requests: write
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: GeiserX/lynxprompt-action@v1
-        with:
-          mode: validate
-          token: ${{ secrets.LYNXPROMPT_TOKEN }}
-          platforms: 'cursor,claude-code,copilot'
-```
-
-### Generate Configs from LynxPrompt on Schedule
-
-Pull blueprints from LynxPrompt and write them to the repo on a daily schedule. Auto-commit the changes.
-
-```yaml
-name: Generate AI Configs
-on:
-  schedule:
-    - cron: '0 6 * * 1'  # Every Monday at 06:00 UTC
-  workflow_dispatch:
-
-jobs:
-  generate:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: GeiserX/lynxprompt-action@v1
-        with:
-          mode: generate
-          token: ${{ secrets.LYNXPROMPT_TOKEN }}
-          commit-changes: 'true'
-```
-
-### Diff Configs on Pull Request
-
-Compare local configs with cloud blueprints and post a drift report as a PR comment. Optionally fail the check if drift is detected.
-
-```yaml
-name: Diff AI Configs
-on:
-  pull_request:
-    branches: [main]
-
-jobs:
-  diff:
-    runs-on: ubuntu-latest
-    permissions:
-      pull-requests: write
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: GeiserX/lynxprompt-action@v1
-        with:
-          mode: diff
-          token: ${{ secrets.LYNXPROMPT_TOKEN }}
-          fail-on-drift: 'true'
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-```
-
-### Monorepo Support
-
-The action automatically detects nested config files. For example, in a monorepo:
-
-```
-my-monorepo/
-  AGENTS.md                          # Root-level config
-  packages/
-    api/
-      AGENTS.md                      # Package-specific config
-    web/
-      AGENTS.md
-      .cursor/rules/frontend.mdc
-```
-
-Each file is synced as a separate blueprint with its full relative path as the name (e.g., `packages/api/AGENTS.md`).
-
-### Custom File Patterns
-
-Override the default glob patterns to include or limit which files are processed:
-
-```yaml
-- uses: GeiserX/lynxprompt-action@v1
-  with:
-    mode: sync
-    token: ${{ secrets.LYNXPROMPT_TOKEN }}
-    files: |
-      CLAUDE.md
-      docs/AGENTS.md
-      .cursor/rules/**/*.mdc
-```
-
-## Inputs
-
-| Input | Description | Required | Default |
-|-------|-------------|----------|---------|
-| `mode` | Action mode: `sync`, `validate`, `generate`, or `diff` | Yes | - |
-| `token` | LynxPrompt API token (`lp_...`) | Yes | - |
-| `api-url` | LynxPrompt API base URL | No | `https://lynxprompt.com` |
-| `files` | Glob pattern(s) for config files (comma or newline separated) | No | See below |
-| `visibility` | Blueprint visibility when syncing: `PRIVATE`, `TEAM`, or `PUBLIC` | No | `PRIVATE` |
-| `platforms` | Required platforms for validate mode (comma-separated) | No | - |
-| `fail-on-drift` | Fail the check if drift is detected (diff mode) | No | `false` |
-| `commit-changes` | Auto-commit generated files (generate mode) | No | `false` |
-
-**Default file patterns:**
-```
-**/{AGENTS,CLAUDE,AIDER}.md
-**/.github/copilot-instructions.md
-**/.windsurfrules
-**/.cursor/rules/**/*.mdc
-```
-
-## Outputs
-
-| Output | Description | Mode |
-|--------|-------------|------|
-| `synced-count` | Number of blueprints created or updated | sync |
-| `validation-passed` | Whether all validations passed (`true`/`false`) | validate |
-| `generated-count` | Number of files generated or updated | generate |
-| `drift-detected` | Whether any drift was detected (`true`/`false`) | diff |
-
-## Supported Platforms
-
-The action recognizes configuration files for these AI coding tools:
-
-| Platform | Config File(s) | Blueprint Type |
-|----------|----------------|----------------|
-| Claude Code | `CLAUDE.md`, `AGENTS.md` | `CLAUDE_MD`, `AGENTS_MD` |
-| Cursor | `.cursor/rules/*.mdc` | `CURSOR_RULES` |
-| GitHub Copilot | `.github/copilot-instructions.md` | `COPILOT_INSTRUCTIONS` |
-| Windsurf | `.windsurfrules` | `WINDSURF_RULES` |
-| Aider | `AIDER.md` | `AIDER_MD` |
-
-## Permissions
-
-Depending on the mode, your workflow may need specific permissions:
-
-```yaml
-permissions:
-  contents: write        # Required for generate mode with commit-changes
-  pull-requests: write   # Required for validate/diff modes to post PR comments
-```
-
-For PR comment posting, also pass `GITHUB_TOKEN` as an environment variable:
-
-```yaml
-env:
-  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-```
-
-## Self-Hosted LynxPrompt
-
-If you self-host LynxPrompt, point the action to your instance:
-
-```yaml
-- uses: GeiserX/lynxprompt-action@v1
-  with:
-    mode: sync
-    token: ${{ secrets.LYNXPROMPT_TOKEN }}
-    api-url: 'https://lynxprompt.internal.example.com'
-```
-
-## Development
-
-```bash
-# Install dependencies
-npm install
-
-# Type-check
-npm run typecheck
-
-# Build (compile TypeScript and bundle with ncc)
-npm run build
-```
-
-The compiled bundle is output to `dist/index.js`. This file must be committed to the repository for the action to work.
-
-
-## Related Projects
-
-| Project | Description |
-|---------|-------------|
-| [LynxPrompt](https://github.com/GeiserX/LynxPrompt) | Self-hosted platform for AI IDE/Tools Rules and Commands via WebUI and CLI |
-| [lynxprompt-vscode](https://github.com/GeiserX/lynxprompt-vscode) | VS Code extension for LynxPrompt AI configuration file management |
-| [lynxprompt-mcp](https://github.com/GeiserX/lynxprompt-mcp) | MCP Server for LynxPrompt AI configuration blueprint management |
-| [n8n-nodes-lynxprompt](https://github.com/GeiserX/n8n-nodes-lynxprompt) | n8n community node for LynxPrompt AI configuration blueprints |
-| [homebrew-lynxprompt](https://github.com/GeiserX/homebrew-lynxprompt) | Homebrew tap for LynxPrompt CLI |
+[LynxPrompt](https://github.com/GeiserX/LynxPrompt), [lynxprompt-vscode](https://github.com/GeiserX/lynxprompt-vscode), [lynxprompt-mcp](https://github.com/GeiserX/lynxprompt-mcp), [n8n-nodes-lynxprompt](https://github.com/GeiserX/n8n-nodes-lynxprompt), [homebrew-lynxprompt](https://github.com/GeiserX/homebrew-lynxprompt).
 
 ## License
 
-GPL-3.0
+[GPL-3.0](LICENSE)
