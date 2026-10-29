@@ -99,7 +99,7 @@ async function autoCommit(
       cwd: workspace,
     });
     await execAsync(
-      'git config user.email "action@lynxprompt.com"',
+      'git config user.email "lynxprompt@geiser.cloud"',
       { cwd: workspace },
     );
 

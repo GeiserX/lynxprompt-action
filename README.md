@@ -9,7 +9,7 @@
 
 # LynxPrompt Action
 
-A GitHub Action to sync, validate, generate, and diff AI IDE configuration files with [LynxPrompt](https://lynxprompt.com) -- a self-hostable platform for managing the configs of [many AI coding tools](https://github.com/GeiserX/LynxPrompt/blob/main/docs/features.md).
+A GitHub Action to sync, validate, generate, and diff AI IDE configuration files with [LynxPrompt](https://lynxprompt.geiser.cloud) -- a self-hostable platform for managing the configs of [many AI coding tools](https://github.com/GeiserX/LynxPrompt/blob/main/docs/features.md).
 
 Supported config files include `AGENTS.md`, `CLAUDE.md`, `.cursor/rules/`, `.github/copilot-instructions.md`, `.windsurfrules`, `AIDER.md`, and more.
 
@@ -21,7 +21,7 @@ Supported config files include `AGENTS.md`, `CLAUDE.md`, `.cursor/rules/`, `.git
 - **diff**: compare local configs with cloud blueprints and post a drift report on the PR, optionally failing the check.
 - Finds nested config files in monorepos and names each blueprint by its relative path.
 - Custom glob patterns through the `files` input.
-- Works with lynxprompt.com or a self-hosted instance through `api-url`.
+- Works with lynxprompt.geiser.cloud or a self-hosted instance through `api-url`.
 
 ## Quick start
 

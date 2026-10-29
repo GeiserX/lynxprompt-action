@@ -6,7 +6,7 @@
 |-------|-------------|----------|---------|
 | `mode` | Action mode: `sync`, `validate`, `generate`, or `diff` | Yes | - |
 | `token` | LynxPrompt API token (`lp_...`) | Yes | - |
-| `api-url` | LynxPrompt API base URL | No | `https://lynxprompt.com` |
+| `api-url` | LynxPrompt API base URL | No | `https://lynxprompt.geiser.cloud` |
 | `files` | Glob pattern(s) for config files (comma or newline separated) | No | See below |
 | `visibility` | Blueprint visibility when syncing: `PRIVATE`, `TEAM`, or `PUBLIC` | No | `PRIVATE` |
 | `platforms` | Required platforms for validate mode (comma-separated) | No | - |

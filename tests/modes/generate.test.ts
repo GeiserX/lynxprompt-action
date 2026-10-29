@@ -39,7 +39,7 @@ describe('runGenerate', () => {
   const baseInputs: ActionInputs = {
     mode: 'generate',
     token: 'lp_test',
-    apiUrl: 'https://lynxprompt.com',
+    apiUrl: 'https://lynxprompt.geiser.cloud',
     files: '**/{AGENTS,CLAUDE}.md',
     visibility: 'PRIVATE',
     platforms: [],

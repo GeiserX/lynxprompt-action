@@ -16,7 +16,7 @@ inputs:
   api-url:
     description: 'LynxPrompt API URL'
     required: false
-    default: 'https://lynxprompt.com'
+    default: 'https://lynxprompt.geiser.cloud'
   files:
     description: 'Glob pattern for config files to process'
     required: false
