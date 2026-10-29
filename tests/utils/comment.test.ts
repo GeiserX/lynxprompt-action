@@ -97,6 +97,15 @@ describe('formatDiffComment', () => {
     expect(body).toContain('Config drift detected');
   });
 
+  it('does not call cloud-only entries drift', () => {
+    const body = formatDiffComment([
+      { file: 'AGENTS.md', blueprintName: 'AGENTS.md', type: 'AGENTS_MD', status: 'match' },
+      { file: 'docs/AGENTS.md', blueprintName: 'docs/AGENTS.md', type: 'AGENTS_MD', status: 'cloud-only' },
+    ]);
+    expect(body).toContain('Configs are in sync');
+    expect(body).toContain('Cloud only');
+  });
+
   it('handles empty results', () => {
     const body = formatDiffComment([]);
     expect(body).toContain('No configuration files to compare');

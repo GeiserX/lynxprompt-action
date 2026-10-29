@@ -8,18 +8,24 @@
 | `token` | LynxPrompt API token (`lp_...`) | Yes | - |
 | `api-url` | LynxPrompt API base URL | No | `https://lynxprompt.geiser.cloud` |
 | `files` | Glob pattern(s) for config files (comma or newline separated) | No | See below |
-| `visibility` | Blueprint visibility when syncing: `PRIVATE`, `TEAM`, or `PUBLIC` | No | `PRIVATE` |
+| `visibility` | Blueprint visibility when syncing: `PRIVATE`, `TEAM`, or `PUBLIC`. When unset, new blueprints are `PRIVATE` and existing ones keep the visibility they have | No | - |
+| `team-id` | Team that `TEAM` blueprints are shared with. Needed only when you belong to more than one team | No | - |
+| `github-token` | GitHub token used to post PR comments (validate and diff modes) | No | `${{ github.token }}` |
 | `platforms` | Required platforms for validate mode (comma-separated) | No | - |
 | `fail-on-drift` | Fail the check if drift is detected (diff mode) | No | `false` |
 | `commit-changes` | Auto-commit generated files (generate mode) | No | `false` |
 
 **Default file patterns:**
 ```
-**/{AGENTS,CLAUDE,AIDER}.md
+**/AGENTS.md
+**/CLAUDE.md
+**/AIDER.md
 **/.github/copilot-instructions.md
 **/.windsurfrules
 **/.cursor/rules/**/*.mdc
 ```
+
+Braces such as `**/{AGENTS,CLAUDE}.md` are expanded by the action, and the comma inside them does not split the pattern.
 
 ## Outputs
 

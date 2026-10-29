@@ -51,8 +51,9 @@ jobs:
         with:
           mode: sync
           token: ${{ secrets.LYNXPROMPT_TOKEN }}
-          visibility: PRIVATE
 ```
+
+New blueprints are created `PRIVATE`. Set `visibility` only if you want sync to apply it to every blueprint, including ones you published or shared from the web app. A file that fails to sync fails the job.
 
 ## Validate Configs on Pull Request
 
@@ -81,7 +82,7 @@ jobs:
 
 ## Generate Configs from LynxPrompt on Schedule
 
-Pull blueprints from LynxPrompt and write them to the repo on a daily schedule. Auto-commit the changes.
+Pull this repository's blueprints from LynxPrompt and write each one back to the path it was synced from. Auto-commit the changes. Blueprints of other repositories, and blueprints that were never synced from a repository, are left alone.
 
 ```yaml
 name: Generate AI Configs
@@ -107,7 +108,7 @@ jobs:
 
 ## Diff Configs on Pull Request
 
-Compare local configs with cloud blueprints and post a drift report as a PR comment. Optionally fail the check if drift is detected.
+Compare local configs with this repository's blueprints and post a drift report as a PR comment. Optionally fail the check if drift is detected. Drift is a file that differs from its blueprint or has no blueprint yet. A blueprint whose file no longer exists is listed as cloud only but does not count as drift, because sync never deletes blueprints.
 
 ```yaml
 name: Diff AI Configs
@@ -128,8 +129,6 @@ jobs:
           mode: diff
           token: ${{ secrets.LYNXPROMPT_TOKEN }}
           fail-on-drift: 'true'
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 ```
 
 ## Monorepo Support
@@ -147,7 +146,7 @@ my-monorepo/
       .cursor/rules/frontend.mdc
 ```
 
-Each file is synced as a separate blueprint with its full relative path as the name (e.g., `packages/api/AGENTS.md`).
+Each file is synced as a separate blueprint with its full relative path as the name (e.g., `packages/api/AGENTS.md`). The blueprints of one repository are grouped in a LynxPrompt hierarchy, the same one `lynxp push` uses for that repository, and each one records its file path, so sync updates the right blueprint and generate writes it back to the right file.
 
 ## Custom File Patterns
 
@@ -174,12 +173,7 @@ permissions:
   pull-requests: write   # Required for validate/diff modes to post PR comments
 ```
 
-For PR comment posting, also pass `GITHUB_TOKEN` as an environment variable:
-
-```yaml
-env:
-  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-```
+PR comments use the workflow's own token through the `github-token` input, so `pull-requests: write` is all they need.
 
 ## Self-hosted LynxPrompt
 

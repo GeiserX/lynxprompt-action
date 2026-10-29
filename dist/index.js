@@ -42,6 +42,8 @@ var __importStar = (this && this.__importStar) || (function () {
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.LynxPromptClient = void 0;
 const core = __importStar(__nccwpck_require__(7484));
+/** The v1 API caps `limit` at 100. */
+const PAGE_SIZE = 100;
 class LynxPromptClient {
     baseUrl;
     token;
@@ -72,14 +74,31 @@ class LynxPromptClient {
         if (contentType && contentType.includes('application/json')) {
             return (await response.json());
         }
-        return {};
+        throw new Error(`LynxPrompt API error: ${method} ${path} did not return JSON (content-type: ${contentType ?? 'none'})`);
     }
     /**
-     * List all blueprints for the authenticated user.
+     * Fetch every page of a v1 list endpoint. The API answers
+     * `{ <key>: [...], total, limit, offset, has_more }`.
+     */
+    async listAll(path, key) {
+        const items = [];
+        for (;;) {
+            const page = await this.request('GET', `${path}?limit=${PAGE_SIZE}&offset=${items.length}`);
+            const batch = page[key];
+            if (!Array.isArray(batch)) {
+                throw new Error(`LynxPrompt API error: GET ${path} returned no "${key}" array`);
+            }
+            items.push(...batch);
+            if (!page.has_more || batch.length === 0)
+                return items;
+        }
+    }
+    /**
+     * List all blueprints of the authenticated user, every page.
      */
     async listBlueprints() {
         core.info('Fetching blueprints from LynxPrompt...');
-        const result = await this.request('GET', '/api/v1/blueprints');
+        const result = await this.listAll('/api/v1/blueprints', 'blueprints');
         core.info(`Found ${result.length} blueprint(s)`);
         return result;
     }
@@ -88,35 +107,45 @@ class LynxPromptClient {
      */
     async getBlueprint(id) {
         core.debug(`Fetching blueprint ${id}`);
-        return this.request('GET', `/api/v1/blueprints/${id}`);
+        const result = await this.request('GET', `/api/v1/blueprints/${encodeURIComponent(id)}`);
+        return result.blueprint;
     }
     /**
      * Create a new blueprint.
      */
     async createBlueprint(data) {
         core.info(`Creating blueprint: ${data.name} (${data.type})`);
-        return this.request('POST', '/api/v1/blueprints', data);
+        const result = await this.request('POST', '/api/v1/blueprints', data);
+        return result.blueprint;
     }
     /**
      * Update an existing blueprint.
      */
     async updateBlueprint(id, data) {
         core.info(`Updating blueprint ${id}: ${data.name ?? '(no name change)'}`);
-        return this.request('PUT', `/api/v1/blueprints/${id}`, data);
+        const result = await this.request('PUT', `/api/v1/blueprints/${encodeURIComponent(id)}`, data);
+        return result.blueprint;
     }
     /**
-     * Find a blueprint by name and type. Returns the first match or undefined.
+     * List all hierarchies (one per repository) of the authenticated user.
      */
-    async findBlueprint(name, type) {
-        const blueprints = await this.listBlueprints();
-        return blueprints.find((b) => b.name === name && b.type === type);
+    async listHierarchies() {
+        return this.listAll('/api/v1/hierarchies', 'hierarchies');
+    }
+    /**
+     * Create the hierarchy for a repository. The server returns the existing
+     * one when this user already has a hierarchy with that repository_root.
+     */
+    async ensureHierarchy(name, repositoryRoot) {
+        const result = await this.request('POST', '/api/v1/hierarchies', { name, repository_root: repositoryRoot });
+        return result.hierarchy;
     }
     /**
      * Validate that the token is valid by making a list request.
      */
     async validateToken() {
         try {
-            await this.listBlueprints();
+            await this.request('GET', '/api/v1/blueprints?limit=1');
             return true;
         }
         catch {
@@ -175,6 +204,7 @@ const validate_1 = __nccwpck_require__(8905);
 const generate_1 = __nccwpck_require__(8844);
 const diff_1 = __nccwpck_require__(2524);
 const apiUrl_1 = __nccwpck_require__(3910);
+const detector_1 = __nccwpck_require__(7110);
 /**
  * Parse and validate action inputs.
  */
@@ -189,16 +219,16 @@ function getInputs() {
         core.warning('Token does not start with "lp_". Ensure you are using a valid LynxPrompt API token.');
     }
     const apiUrl = (0, apiUrl_1.resolveApiUrl)(core.getInput('api-url'));
-    const files = core.getInput('files') ||
-        '**/{AGENTS,CLAUDE,AIDER}.md,**/.github/copilot-instructions.md,**/.windsurfrules,**/.cursor/rules/**/*.mdc';
-    const visibility = (core.getInput('visibility') ||
-        'PRIVATE');
+    const files = core.getInput('files') || detector_1.DEFAULT_PATTERNS.join(',');
+    // Empty means: PRIVATE for new blueprints, unchanged for existing ones
+    const visibility = core.getInput('visibility').toUpperCase() ||
+        undefined;
     const validVisibilities = [
         'PRIVATE',
         'TEAM',
         'PUBLIC',
     ];
-    if (!validVisibilities.includes(visibility)) {
+    if (visibility && !validVisibilities.includes(visibility)) {
         throw new Error(`Invalid visibility "${visibility}". Must be one of: ${validVisibilities.join(', ')}`);
     }
     const platformsRaw = core.getInput('platforms') || '';
@@ -206,6 +236,8 @@ function getInputs() {
         .split(',')
         .map((p) => p.trim())
         .filter((p) => p.length > 0);
+    const teamId = core.getInput('team-id') || undefined;
+    const githubToken = core.getInput('github-token') || process.env.GITHUB_TOKEN || undefined;
     const failOnDrift = core.getBooleanInput('fail-on-drift');
     const commitChanges = core.getBooleanInput('commit-changes');
     return {
@@ -214,6 +246,8 @@ function getInputs() {
         apiUrl,
         files,
         visibility,
+        teamId,
+        githubToken,
         platforms,
         failOnDrift,
         commitChanges,
@@ -225,8 +259,10 @@ function getInputs() {
 async function run() {
     try {
         const inputs = getInputs();
-        // Mask the token in logs
+        // Mask the tokens in logs
         core.setSecret(inputs.token);
+        if (inputs.githubToken)
+            core.setSecret(inputs.githubToken);
         core.info(`LynxPrompt Action - Mode: ${inputs.mode}`);
         core.info(`API URL: ${inputs.apiUrl}`);
         const client = new api_1.LynxPromptClient(inputs.apiUrl, inputs.token);
@@ -313,41 +349,45 @@ var __importStar = (this && this.__importStar) || (function () {
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.runDiff = runDiff;
 const core = __importStar(__nccwpck_require__(7484));
-const crypto = __importStar(__nccwpck_require__(6982));
 const detector_1 = __nccwpck_require__(7110);
 const comment_1 = __nccwpck_require__(6303);
+const checksum_1 = __nccwpck_require__(1579);
+const repo_1 = __nccwpck_require__(3012);
 /**
  * Diff mode: compare local AI config files with cloud blueprints.
  *
  * - Detects local config files
- * - Fetches blueprints from LynxPrompt
+ * - Fetches this repository's blueprints from LynxPrompt
  * - Compares checksums to detect drift
  * - Posts a PR comment showing differences
- * - Optionally fails the check if drift is detected
+ * - Optionally fails the check if drift is detected. Drift is a file that
+ *   differs from its blueprint or has none; a blueprint with no local file
+ *   is reported but is not drift, because sync never deletes blueprints.
  */
 async function runDiff(client, inputs, workspace) {
     const patterns = (0, detector_1.parseFilePatterns)(inputs.files);
     const localFiles = await (0, detector_1.detectConfigFiles)(workspace, patterns);
-    // Fetch all blueprints
-    const blueprints = await client.listBlueprints();
+    // Fetch the blueprints of this repository only
+    const hierarchy = await (0, repo_1.findRepoHierarchy)(client, workspace, false);
+    const blueprints = await (0, repo_1.listRepoBlueprints)(client, hierarchy);
     const results = [];
     const matchedBlueprintIds = new Set();
     // Compare local files against cloud blueprints
     for (const file of localFiles) {
-        const matching = blueprints.find((b) => b.name === file.blueprintName && b.type === file.type);
+        const matching = blueprints.find((b) => b.repository_path === file.blueprintName);
         if (!matching) {
             results.push({
                 file: file.relativePath,
                 blueprintName: file.blueprintName,
                 type: file.type,
                 status: 'local-only',
-                localChecksum: computeChecksum(file.content),
+                localChecksum: (0, checksum_1.contentChecksum)(file.content),
                 details: 'File exists locally but not in LynxPrompt',
             });
             continue;
         }
         matchedBlueprintIds.add(matching.id);
-        const localChecksum = computeChecksum(file.content);
+        const localChecksum = (0, checksum_1.contentChecksum)(file.content);
         const cloudChecksum = matching.content_checksum;
         if (localChecksum === cloudChecksum) {
             results.push({
@@ -388,7 +428,7 @@ async function runDiff(client, inputs, workspace) {
     for (const blueprint of blueprints) {
         if (!matchedBlueprintIds.has(blueprint.id)) {
             results.push({
-                file: `(not found locally)`,
+                file: blueprint.repository_path ?? '(not found locally)',
                 blueprintName: blueprint.name,
                 type: blueprint.type,
                 status: 'cloud-only',
@@ -398,7 +438,7 @@ async function runDiff(client, inputs, workspace) {
         }
     }
     // Log results
-    const driftCount = results.filter((r) => r.status !== 'match').length;
+    const driftCount = results.filter((r) => r.status === 'drift' || r.status === 'local-only').length;
     const hasDrift = driftCount > 0;
     core.info('--- Diff Summary ---');
     for (const r of results) {
@@ -413,19 +453,13 @@ async function runDiff(client, inputs, workspace) {
     }
     // Post PR comment
     const commentBody = (0, comment_1.formatDiffComment)(results);
-    await (0, comment_1.upsertPrComment)(commentBody);
+    await (0, comment_1.upsertPrComment)(commentBody, inputs.githubToken);
     // Set outputs
     core.setOutput('drift-detected', hasDrift);
     // Optionally fail
     if (inputs.failOnDrift && hasDrift) {
         core.setFailed(`Config drift detected: ${driftCount} file(s) differ from cloud blueprints.`);
     }
-}
-/**
- * Compute SHA-256 checksum of content.
- */
-function computeChecksum(content) {
-    return crypto.createHash('sha256').update(content, 'utf-8').digest('hex');
 }
 //# sourceMappingURL=diff.js.map
 
@@ -470,25 +504,45 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.resolveInWorkspace = resolveInWorkspace;
 exports.runGenerate = runGenerate;
 const core = __importStar(__nccwpck_require__(7484));
 const fs = __importStar(__nccwpck_require__(1943));
 const path = __importStar(__nccwpck_require__(6928));
-const mapper_1 = __nccwpck_require__(7257);
+const repo_1 = __nccwpck_require__(3012);
 const child_process_1 = __nccwpck_require__(5317);
 const util_1 = __nccwpck_require__(9023);
-const execAsync = (0, util_1.promisify)(child_process_1.exec);
+const execFileAsync = (0, util_1.promisify)(child_process_1.execFile);
+/** Run git with an argv, never through a shell. */
+function git(args, cwd) {
+    return execFileAsync('git', args, { cwd });
+}
+/**
+ * The absolute path for a blueprint's repository_path, or undefined when it
+ * would land outside the workspace or inside .git.
+ */
+function resolveInWorkspace(workspace, repositoryPath) {
+    const root = path.resolve(workspace);
+    const full = path.resolve(root, repositoryPath);
+    const rel = path.relative(root, full);
+    if (!rel || rel.startsWith('..') || path.isAbsolute(rel))
+        return undefined;
+    if (rel.split(path.sep)[0] === '.git')
+        return undefined;
+    return full;
+}
 /**
  * Generate mode: pull blueprints from LynxPrompt and write them to the repo.
  *
- * - Fetches all blueprints from LynxPrompt
- * - Writes each blueprint to its default file path
+ * - Fetches this repository's blueprints from LynxPrompt
+ * - Writes each blueprint to the file path it was synced from
  * - Optionally auto-commits the changes
  */
 async function runGenerate(client, inputs, workspace) {
-    const blueprints = await client.listBlueprints();
+    const hierarchy = await (0, repo_1.findRepoHierarchy)(client, workspace, false);
+    const blueprints = await (0, repo_1.listRepoBlueprints)(client, hierarchy);
     if (blueprints.length === 0) {
-        core.warning('No blueprints found in LynxPrompt.');
+        core.warning('No blueprints found in LynxPrompt for this repository.');
         core.setOutput('generated-count', 0);
         return;
     }
@@ -497,11 +551,15 @@ async function runGenerate(client, inputs, workspace) {
     const generatedFiles = [];
     for (const blueprintMeta of blueprints) {
         try {
+            // The file path is the one the blueprint was synced from
+            const filePath = blueprintMeta.repository_path;
+            const fullPath = resolveInWorkspace(workspace, filePath);
+            if (!fullPath) {
+                core.warning(`Skipping blueprint ${blueprintMeta.name}: path "${filePath}" is outside the repository.`);
+                continue;
+            }
             // Fetch full blueprint with content
             const blueprint = await client.getBlueprint(blueprintMeta.id);
-            // Determine the file path
-            const filePath = (0, mapper_1.typeToDefaultPath)(blueprint.type, blueprint.name);
-            const fullPath = path.join(workspace, filePath);
             // Ensure directory exists
             const dir = path.dirname(fullPath);
             await fs.mkdir(dir, { recursive: true });
@@ -543,17 +601,15 @@ async function autoCommit(workspace, files) {
     core.info('Auto-committing generated files...');
     try {
         // Configure git
-        await execAsync('git config user.name "LynxPrompt Action"', {
-            cwd: workspace,
-        });
-        await execAsync('git config user.email "lynxprompt@geiser.cloud"', { cwd: workspace });
+        await git(['config', 'user.name', 'LynxPrompt Action'], workspace);
+        await git(['config', 'user.email', 'lynxprompt@geiser.cloud'], workspace);
         // Stage the files
         for (const file of files) {
-            await execAsync(`git add "${file}"`, { cwd: workspace });
+            await git(['add', '--', file], workspace);
         }
         // Check if there are staged changes
         try {
-            await execAsync('git diff --cached --quiet', { cwd: workspace });
+            await git(['diff', '--cached', '--quiet'], workspace);
             core.info('No changes to commit (files unchanged after staging).');
             return;
         }
@@ -561,9 +617,9 @@ async function autoCommit(workspace, files) {
             // Non-zero exit means there are changes - this is expected
         }
         // Commit
-        await execAsync('git commit -m "chore: update AI config files from LynxPrompt"', { cwd: workspace });
+        await git(['commit', '-m', 'chore: update AI config files from LynxPrompt'], workspace);
         // Push
-        await execAsync('git push', { cwd: workspace });
+        await git(['push'], workspace);
         core.info('Changes committed and pushed successfully.');
     }
     catch (error) {
@@ -618,13 +674,16 @@ Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.runSync = runSync;
 const core = __importStar(__nccwpck_require__(7484));
 const detector_1 = __nccwpck_require__(7110);
+const checksum_1 = __nccwpck_require__(1579);
+const repo_1 = __nccwpck_require__(3012);
 /**
  * Sync mode: upload local AI config files as blueprints to LynxPrompt.
  *
  * - Detects config files in the repository
- * - For each file, checks if a blueprint with the same name + type exists
+ * - Puts them in this repository's hierarchy, matched by file path
  * - Creates new blueprints or updates existing ones
  * - Skips files whose content matches the cloud version (by checksum)
+ * - Fails the job if any file could not be synced
  */
 async function runSync(client, inputs, workspace) {
     const patterns = (0, detector_1.parseFilePatterns)(inputs.files);
@@ -635,22 +694,21 @@ async function runSync(client, inputs, workspace) {
         return;
     }
     core.info(`Processing ${files.length} file(s) for sync...`);
-    // Fetch all existing blueprints once for efficiency
-    const existingBlueprints = await client.listBlueprints();
+    const hierarchy = (await (0, repo_1.findRepoHierarchy)(client, workspace, true));
+    core.info(`Repository hierarchy: ${hierarchy.name} (${hierarchy.id})`);
+    // Fetch this repository's blueprints once for efficiency
+    const existingBlueprints = await (0, repo_1.listRepoBlueprints)(client, hierarchy);
     const results = [];
+    const failed = [];
     for (const file of files) {
         try {
-            const result = await syncFile(client, file, inputs, existingBlueprints);
+            const result = await syncFile(client, file, inputs, hierarchy, existingBlueprints);
             results.push(result);
         }
         catch (error) {
             const msg = error instanceof Error ? error.message : String(error);
             core.error(`Failed to sync ${file.relativePath}: ${msg}`);
-            results.push({
-                file: file.relativePath,
-                blueprintName: file.blueprintName,
-                action: 'unchanged',
-            });
+            failed.push(file.relativePath);
         }
     }
     // Summary
@@ -661,15 +719,17 @@ async function runSync(client, inputs, workspace) {
     core.info(`  Created: ${created}`);
     core.info(`  Updated: ${updated}`);
     core.info(`  Unchanged: ${unchanged}`);
+    core.info(`  Failed: ${failed.length}`);
     core.setOutput('synced-count', created + updated);
+    if (failed.length > 0) {
+        core.setFailed(`Failed to sync ${failed.length} of ${files.length} file(s): ${failed.join(', ')}`);
+    }
 }
-async function syncFile(client, file, inputs, existingBlueprints) {
-    // Look for an existing blueprint with the same name and type
-    const existing = existingBlueprints.find((b) => b.name === file.blueprintName && b.type === file.type);
+async function syncFile(client, file, inputs, hierarchy, existingBlueprints) {
+    // The blueprint of this file is the one at the same path in this repository
+    const existing = existingBlueprints.find((b) => b.repository_path === file.blueprintName);
     if (existing) {
-        // Check if content has changed by comparing checksums
-        const localChecksum = computeSimpleChecksum(file.content);
-        if (localChecksum === existing.content_checksum) {
+        if ((0, checksum_1.contentChecksum)(file.content) === existing.content_checksum) {
             core.info(`Unchanged: ${file.relativePath} (checksum match)`);
             return {
                 file: file.relativePath,
@@ -678,10 +738,13 @@ async function syncFile(client, file, inputs, existingBlueprints) {
                 blueprintId: existing.id,
             };
         }
-        // Update the existing blueprint
+        // Visibility changes only when the workflow sets it, so a blueprint
+        // published or shared from the web stays that way
         const updated = await client.updateBlueprint(existing.id, {
             content: file.content,
-            visibility: inputs.visibility,
+            expected_checksum: existing.content_checksum,
+            ...(inputs.visibility ? { visibility: inputs.visibility } : {}),
+            ...(inputs.teamId ? { team_id: inputs.teamId } : {}),
         });
         core.info(`Updated: ${file.relativePath} -> blueprint ${updated.id}`);
         return {
@@ -696,8 +759,11 @@ async function syncFile(client, file, inputs, existingBlueprints) {
         name: file.blueprintName,
         type: file.type,
         content: file.content,
-        visibility: inputs.visibility,
+        visibility: inputs.visibility ?? 'PRIVATE',
         description: `Auto-synced from ${file.relativePath}`,
+        hierarchy_id: hierarchy.id,
+        repository_path: file.blueprintName,
+        ...(inputs.teamId ? { team_id: inputs.teamId } : {}),
     });
     core.info(`Created: ${file.relativePath} -> blueprint ${created.id}`);
     return {
@@ -706,15 +772,6 @@ async function syncFile(client, file, inputs, existingBlueprints) {
         action: 'created',
         blueprintId: created.id,
     };
-}
-/**
- * Compute a simple SHA-256-like checksum for content comparison.
- * This is a basic implementation; the server may use a different algorithm.
- * If checksums never match, the action will always update (safe fallback).
- */
-function computeSimpleChecksum(content) {
-    const { createHash } = __nccwpck_require__(6982);
-    return createHash('sha256').update(content, 'utf-8').digest('hex');
 }
 //# sourceMappingURL=sync.js.map
 
@@ -822,7 +879,7 @@ async function runValidate(_client, inputs, workspace) {
     }
     // Post PR comment
     const commentBody = (0, comment_1.formatValidationComment)(results, allPassed);
-    await (0, comment_1.upsertPrComment)(commentBody);
+    await (0, comment_1.upsertPrComment)(commentBody, inputs.githubToken);
     // Set outputs
     core.setOutput('validation-passed', allPassed);
     if (!allPassed) {
@@ -930,6 +987,28 @@ function resolveApiUrl(input) {
 
 /***/ }),
 
+/***/ 1579:
+/***/ ((__unused_webpack_module, exports, __nccwpck_require__) => {
+
+"use strict";
+
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.contentChecksum = contentChecksum;
+const crypto_1 = __nccwpck_require__(6982);
+/**
+ * Checksum of a blueprint's content, the same as the server's
+ * contentChecksum (LynxPrompt src/lib/content-checksum.ts): CRLF and CR
+ * become LF, the text is trimmed, and the first 16 hex chars of its SHA-256
+ * are kept. The server returns this as `content_checksum`.
+ */
+function contentChecksum(content) {
+    const normalized = content.replace(/\r\n?/g, '\n').trim();
+    return (0, crypto_1.createHash)('sha256').update(normalized).digest('hex').slice(0, 16);
+}
+//# sourceMappingURL=checksum.js.map
+
+/***/ }),
+
 /***/ 6303:
 /***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
 
@@ -979,10 +1058,9 @@ const COMMENT_MARKER = '<!-- lynxprompt-action -->';
  * Create or update a PR comment with the given body.
  * Uses a hidden marker to find and update existing comments.
  */
-async function upsertPrComment(body) {
-    const token = process.env.GITHUB_TOKEN;
+async function upsertPrComment(body, token = process.env.GITHUB_TOKEN) {
     if (!token) {
-        core.warning('GITHUB_TOKEN not available. Cannot post PR comment. Set permissions.pull-requests: write in your workflow.');
+        core.warning('No GitHub token, so no PR comment. The github-token input defaults to the workflow token; set it if your workflow overrides it with an empty value.');
         return;
     }
     const context = github.context;
@@ -1050,15 +1128,10 @@ function formatValidationComment(results, allPassed) {
  * Format diff results as a Markdown comment body.
  */
 function formatDiffComment(results) {
-    const hasDrift = results.some((r) => r.status === 'drift');
-    const hasLocalOnly = results.some((r) => r.status === 'local-only');
-    const hasCloudOnly = results.some((r) => r.status === 'cloud-only');
-    const icon = hasDrift || hasLocalOnly || hasCloudOnly
-        ? ':warning:'
-        : ':white_check_mark:';
-    const title = hasDrift || hasLocalOnly || hasCloudOnly
-        ? 'Config drift detected'
-        : 'Configs are in sync';
+    // A cloud-only blueprint is listed but is not drift (see runDiff)
+    const hasDrift = results.some((r) => r.status === 'drift' || r.status === 'local-only');
+    const icon = hasDrift ? ':warning:' : ':white_check_mark:';
+    const title = hasDrift ? 'Config drift detected' : 'Configs are in sync';
     let body = `## ${icon} LynxPrompt Diff: ${title}\n\n`;
     if (results.length === 0) {
         body += 'No configuration files to compare.\n';
@@ -1134,6 +1207,7 @@ var __importStar = (this && this.__importStar) || (function () {
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.DEFAULT_PATTERNS = void 0;
 exports.parseFilePatterns = parseFilePatterns;
+exports.expandBraces = expandBraces;
 exports.detectConfigFiles = detectConfigFiles;
 const core = __importStar(__nccwpck_require__(7484));
 const glob = __importStar(__nccwpck_require__(7206));
@@ -1144,7 +1218,9 @@ const mapper_1 = __nccwpck_require__(7257);
  * Default glob patterns for AI IDE configuration files.
  */
 exports.DEFAULT_PATTERNS = [
-    '**/{AGENTS,CLAUDE,AIDER}.md',
+    '**/AGENTS.md',
+    '**/CLAUDE.md',
+    '**/AIDER.md',
     '**/.github/copilot-instructions.md',
     '**/.windsurfrules',
     '**/.cursor/rules/**/*.mdc',
@@ -1164,22 +1240,62 @@ const EXCLUDED_DIRS = [
 ];
 /**
  * Parse the files input string into an array of glob patterns.
- * Supports comma-separated and newline-separated patterns.
+ * Supports comma-separated and newline-separated patterns. A comma inside
+ * braces does not split, and braces are expanded here
+ * (`**\/{AGENTS,CLAUDE}.md` gives `**\/AGENTS.md` and `**\/CLAUDE.md`),
+ * because @actions/glob does not expand them.
  */
 function parseFilePatterns(input) {
-    return input
-        .split(/[,\n]/)
+    const patterns = [];
+    let current = '';
+    let depth = 0;
+    for (const ch of input) {
+        if (ch === '{')
+            depth++;
+        if (ch === '}' && depth > 0)
+            depth--;
+        if ((ch === ',' && depth === 0) || ch === '\n') {
+            patterns.push(current);
+            current = '';
+            depth = 0;
+        }
+        else {
+            current += ch;
+        }
+    }
+    patterns.push(current);
+    return patterns
         .map((p) => p.trim())
-        .filter((p) => p.length > 0);
+        .filter((p) => p.length > 0)
+        .flatMap(expandBraces);
+}
+/** Expand `{a,b}` groups, innermost first: `x{a,b}y` gives `xay`, `xby`. */
+function expandBraces(pattern) {
+    const match = /\{([^{}]*,[^{}]*)\}/.exec(pattern);
+    if (!match)
+        return [pattern];
+    const before = pattern.slice(0, match.index);
+    const after = pattern.slice(match.index + match[0].length);
+    return match[1]
+        .split(',')
+        .flatMap((alt) => expandBraces(`${before}${alt}${after}`));
+}
+/** Prefix a relative glob pattern (or `!pattern`) with the workspace. */
+function rootPattern(workspace, pattern) {
+    const negate = pattern.startsWith('!');
+    const body = negate ? pattern.slice(1) : pattern;
+    const rooted = path.isAbsolute(body) ? body : path.join(workspace, body);
+    return negate ? `!${rooted}` : rooted;
 }
 /**
  * Detect AI configuration files in the workspace.
  */
 async function detectConfigFiles(workspace, patterns) {
     const detected = [];
-    // Build the glob pattern with exclusions
+    // Build the glob pattern with exclusions. @actions/glob resolves relative
+    // patterns against the process cwd, so root them at the workspace.
     const excludePatterns = EXCLUDED_DIRS.map((d) => `!**/${d}/**`);
-    const allPatterns = [...patterns, ...excludePatterns];
+    const allPatterns = [...patterns, ...excludePatterns].map((p) => rootPattern(workspace, p));
     core.debug(`Glob patterns: ${allPatterns.join(', ')}`);
     const globber = await glob.create(allPatterns.join('\n'), {
         followSymbolicLinks: false,
@@ -1251,7 +1367,6 @@ var __importStar = (this && this.__importStar) || (function () {
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.mapFileToType = mapFileToType;
 exports.buildBlueprintName = buildBlueprintName;
-exports.typeToDefaultPath = typeToDefaultPath;
 const path = __importStar(__nccwpck_require__(6928));
 const PATTERN_RULES = [
     {
@@ -1304,32 +1419,108 @@ function buildBlueprintName(relativePath, _workspace) {
     // Remove leading ./
     return normalized.replace(/^\.\//, '');
 }
-/**
- * Map a BlueprintType to the default file path where it should be written.
- */
-function typeToDefaultPath(type, name) {
-    switch (type) {
-        case 'AGENTS_MD':
-            return 'AGENTS.md';
-        case 'CLAUDE_MD':
-            return 'CLAUDE.md';
-        case 'AIDER_MD':
-            return 'AIDER.md';
-        case 'COPILOT_INSTRUCTIONS':
-            return '.github/copilot-instructions.md';
-        case 'WINDSURF_RULES':
-            return '.windsurfrules';
-        case 'CURSOR_RULES':
-            // Use the blueprint name if it looks like a path, otherwise generate one
-            if (name && name.includes('.cursor/rules/')) {
-                return name;
-            }
-            return `.cursor/rules/${name ?? 'default'}.mdc`;
-        default:
-            return name ?? 'unknown-config.md';
-    }
-}
 //# sourceMappingURL=mapper.js.map
+
+/***/ }),
+
+/***/ 3012:
+/***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
+
+"use strict";
+
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.repositoryRoot = repositoryRoot;
+exports.findRepoHierarchy = findRepoHierarchy;
+exports.listRepoBlueprints = listRepoBlueprints;
+const fs = __importStar(__nccwpck_require__(9896));
+const path = __importStar(__nccwpck_require__(6928));
+const crypto_1 = __nccwpck_require__(6982);
+/**
+ * Identifier of this repository on LynxPrompt, computed the way the CLI does
+ * (createRepositoryRoot in cli/src/commands/push.ts): the first 16 hex chars
+ * of the SHA-256 of the first remote URL in .git/config. actions/checkout
+ * writes `https://github.com/<owner>/<repo>` there, so without a checkout the
+ * same URL is built from the runner's environment.
+ */
+function repositoryRoot(workspace) {
+    let url;
+    try {
+        const config = fs.readFileSync(path.join(workspace, '.git', 'config'), 'utf-8');
+        url = config.match(/url = (.+)/)?.[1].trim();
+    }
+    catch {
+        // No git checkout
+    }
+    if (!url && process.env.GITHUB_REPOSITORY) {
+        const server = process.env.GITHUB_SERVER_URL || 'https://github.com';
+        url = `${server}/${process.env.GITHUB_REPOSITORY}`;
+    }
+    return (0, crypto_1.createHash)('sha256')
+        .update(url ?? path.resolve(workspace))
+        .digest('hex')
+        .slice(0, 16);
+}
+function hierarchyName(workspace) {
+    return process.env.GITHUB_REPOSITORY || path.basename(path.resolve(workspace));
+}
+/**
+ * The hierarchy of this repository. With `create`, it is created when
+ * missing (sync); without, undefined means this repository has never been
+ * synced (diff, generate), so no blueprint belongs to it.
+ */
+async function findRepoHierarchy(client, workspace, create) {
+    const root = repositoryRoot(workspace);
+    if (create) {
+        return client.ensureHierarchy(hierarchyName(workspace), root);
+    }
+    const hierarchies = await client.listHierarchies();
+    return hierarchies.find((h) => h.repository_root === root);
+}
+/**
+ * The blueprints that belong to this repository: those in its hierarchy
+ * that record the path of their file. Other blueprints of the account
+ * (other repositories, web-only ones) are never touched.
+ */
+async function listRepoBlueprints(client, hierarchy) {
+    if (!hierarchy)
+        return [];
+    const all = await client.listBlueprints();
+    return all.filter((b) => b.hierarchy_id === hierarchy.id && !!b.repository_path);
+}
+//# sourceMappingURL=repo.js.map
 
 /***/ }),
 

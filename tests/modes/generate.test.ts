@@ -1,4 +1,8 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
+import { execFileSync } from 'child_process';
 
 vi.mock('@actions/core', () => ({
   info: vi.fn(),
@@ -9,368 +13,175 @@ vi.mock('@actions/core', () => ({
   setFailed: vi.fn(),
 }));
 
-vi.mock('fs/promises', () => ({
-  readFile: vi.fn(),
-  writeFile: vi.fn(),
-  mkdir: vi.fn(),
-}));
-
-vi.mock('child_process', () => ({
-  exec: vi.fn(),
-}));
-
-vi.mock('util', () => ({
-  promisify: vi.fn((fn: unknown) => fn),
-}));
-
 import * as core from '@actions/core';
-import * as fs from 'fs/promises';
-import { exec } from 'child_process';
-import { runGenerate } from '../../src/modes/generate';
+import { runGenerate, resolveInWorkspace } from '../../src/modes/generate';
 import { LynxPromptClient } from '../../src/api';
-import { ActionInputs } from '../../src/types';
+import { FakeLynxPrompt, TOKEN } from '../fakeServer';
+import { inputs, makeWorkspace, rootOf } from '../workspace';
+
+const AGENTS = '# Agents\n\nUse tabs.\n';
+
+function read(ws: string, rel: string): string | undefined {
+  try {
+    return fs.readFileSync(path.join(ws, rel), 'utf-8');
+  } catch {
+    return undefined;
+  }
+}
 
 describe('runGenerate', () => {
-  let mockClient: {
-    listBlueprints: ReturnType<typeof vi.fn>;
-    getBlueprint: ReturnType<typeof vi.fn>;
-  };
-
-  const baseInputs: ActionInputs = {
-    mode: 'generate',
-    token: 'lp_test',
-    apiUrl: 'https://lynxprompt.geiser.cloud',
-    files: '**/{AGENTS,CLAUDE}.md',
-    visibility: 'PRIVATE',
-    platforms: [],
-    failOnDrift: false,
-    commitChanges: false,
-  };
+  let server: FakeLynxPrompt;
+  let client: LynxPromptClient;
 
   beforeEach(() => {
     vi.clearAllMocks();
-    mockClient = {
-      listBlueprints: vi.fn().mockResolvedValue([]),
-      getBlueprint: vi.fn(),
-    };
+    server = new FakeLynxPrompt();
+    server.install();
+    client = new LynxPromptClient('https://lp.example', TOKEN);
   });
 
-  it('outputs generated-count 0 and warns when no blueprints found', async () => {
-    mockClient.listBlueprints.mockResolvedValue([]);
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
 
-    await runGenerate(mockClient as unknown as LynxPromptClient, baseInputs, '/workspace');
+  it('warns and outputs 0 when this repository has no blueprints', async () => {
+    const ws = makeWorkspace({});
+    server.addBlueprint({ name: 'AGENTS.md', content: '# Some other project' });
+
+    await runGenerate(client, inputs({ mode: 'generate' }), ws);
 
     expect(core.warning).toHaveBeenCalledWith(expect.stringContaining('No blueprints found'));
     expect(core.setOutput).toHaveBeenCalledWith('generated-count', 0);
+    expect(read(ws, 'AGENTS.md')).toBeUndefined();
+    expect(server.writes()).toEqual([]);
   });
 
-  it('generates a new file from a blueprint', async () => {
-    mockClient.listBlueprints.mockResolvedValue([
-      { id: 'bp-1', name: 'AGENTS.md', type: 'AGENTS_MD' },
-    ]);
-    mockClient.getBlueprint.mockResolvedValue({
-      id: 'bp-1',
-      name: 'AGENTS.md',
-      type: 'AGENTS_MD',
-      content: '# Agents\n\nGenerated content.',
-    });
-    vi.mocked(fs.readFile).mockRejectedValue(new Error('ENOENT'));
-    vi.mocked(fs.mkdir).mockResolvedValue(undefined);
-    vi.mocked(fs.writeFile).mockResolvedValue(undefined);
+  it('writes each blueprint of this repository to the path it was synced from', async () => {
+    const ws = makeWorkspace({ 'packages/web/AGENTS.md': '# Web agents, stale\n' });
+    const h = server.addHierarchy('owner/repo', rootOf(ws));
+    server.addBlueprint({ name: 'AGENTS.md', content: AGENTS, hierarchyId: h.id, repositoryPath: 'AGENTS.md' });
+    server.addBlueprint({ name: 'packages/api/AGENTS.md', content: '# Api agents\n', hierarchyId: h.id, repositoryPath: 'packages/api/AGENTS.md' });
+    server.addBlueprint({ name: 'packages/web/AGENTS.md', content: '# Web agents\n', hierarchyId: h.id, repositoryPath: 'packages/web/AGENTS.md' });
+    server.addBlueprint({ name: 'Gemini rules for Foo', type: 'GEMINI_MD', content: '# Gemini\n', hierarchyId: h.id, repositoryPath: 'GEMINI.md' });
 
-    await runGenerate(mockClient as unknown as LynxPromptClient, baseInputs, '/workspace');
+    await runGenerate(client, inputs({ mode: 'generate' }), ws);
 
-    expect(fs.writeFile).toHaveBeenCalledWith(
-      expect.stringContaining('AGENTS.md'),
-      '# Agents\n\nGenerated content.',
-      'utf-8',
-    );
-    expect(core.setOutput).toHaveBeenCalledWith('generated-count', 1);
+    expect(read(ws, 'AGENTS.md')).toBe(AGENTS);
+    expect(read(ws, 'packages/api/AGENTS.md')).toBe('# Api agents\n');
+    expect(read(ws, 'packages/web/AGENTS.md')).toBe('# Web agents\n');
+    expect(read(ws, 'GEMINI.md')).toBe('# Gemini\n');
+    expect(read(ws, 'Gemini rules for Foo')).toBeUndefined();
+    expect(core.setOutput).toHaveBeenCalledWith('generated-count', 4);
   });
 
-  it('skips file when content is identical to existing', async () => {
-    const content = '# Agents\n\nSame content.';
-    mockClient.listBlueprints.mockResolvedValue([
-      { id: 'bp-1', name: 'AGENTS.md', type: 'AGENTS_MD' },
-    ]);
-    mockClient.getBlueprint.mockResolvedValue({
-      id: 'bp-1',
-      name: 'AGENTS.md',
-      type: 'AGENTS_MD',
-      content,
-    });
-    vi.mocked(fs.readFile).mockResolvedValue(content);
-    vi.mocked(fs.mkdir).mockResolvedValue(undefined);
+  it('leaves blueprints of other repositories and of no repository alone', async () => {
+    const ws = makeWorkspace({});
+    const h = server.addHierarchy('owner/repo', rootOf(ws));
+    server.addBlueprint({ name: 'AGENTS.md', content: AGENTS, hierarchyId: h.id, repositoryPath: 'AGENTS.md' });
+    const other = server.addHierarchy('owner/other', 'ffffffffffffffff');
+    server.addBlueprint({ name: 'AGENTS.md', content: '# Other repo agents', hierarchyId: other.id, repositoryPath: 'AGENTS.md' });
+    server.addBlueprint({ name: 'CLAUDE.md', type: 'CLAUDE_MD', content: '# Web-only claude' });
 
-    await runGenerate(mockClient as unknown as LynxPromptClient, baseInputs, '/workspace');
+    await runGenerate(client, inputs({ mode: 'generate' }), ws);
 
-    expect(fs.writeFile).not.toHaveBeenCalled();
-    expect(core.info).toHaveBeenCalledWith(expect.stringContaining('Unchanged'));
+    expect(read(ws, 'AGENTS.md')).toBe(AGENTS);
+    expect(read(ws, 'CLAUDE.md')).toBeUndefined();
+  });
+
+  it('skips a file whose content is already identical', async () => {
+    const ws = makeWorkspace({ 'AGENTS.md': AGENTS });
+    const h = server.addHierarchy('owner/repo', rootOf(ws));
+    server.addBlueprint({ name: 'AGENTS.md', content: AGENTS, hierarchyId: h.id, repositoryPath: 'AGENTS.md' });
+
+    await runGenerate(client, inputs({ mode: 'generate' }), ws);
+
     expect(core.setOutput).toHaveBeenCalledWith('generated-count', 0);
   });
 
-  it('overwrites file when content differs', async () => {
-    mockClient.listBlueprints.mockResolvedValue([
-      { id: 'bp-1', name: 'CLAUDE.md', type: 'CLAUDE_MD' },
-    ]);
-    mockClient.getBlueprint.mockResolvedValue({
-      id: 'bp-1',
-      name: 'CLAUDE.md',
-      type: 'CLAUDE_MD',
-      content: '# Claude Updated',
-    });
-    vi.mocked(fs.readFile).mockResolvedValue('# Claude Old');
-    vi.mocked(fs.mkdir).mockResolvedValue(undefined);
-    vi.mocked(fs.writeFile).mockResolvedValue(undefined);
+  it('refuses a path that leaves the workspace or enters .git', async () => {
+    const ws = makeWorkspace({});
+    const h = server.addHierarchy('owner/repo', rootOf(ws));
+    server.addBlueprint({ name: 'escape', content: '# Escaped file\n', hierarchyId: h.id, repositoryPath: '../../escaped.md' });
+    server.addBlueprint({ name: 'hook', content: '#!/bin/sh\necho pwned\n', hierarchyId: h.id, repositoryPath: '.git/hooks/pre-commit' });
 
-    await runGenerate(mockClient as unknown as LynxPromptClient, baseInputs, '/workspace');
+    await runGenerate(client, inputs({ mode: 'generate' }), ws);
 
-    expect(fs.writeFile).toHaveBeenCalledWith(
-      expect.stringContaining('CLAUDE.md'),
-      '# Claude Updated',
-      'utf-8',
-    );
-    expect(core.setOutput).toHaveBeenCalledWith('generated-count', 1);
+    expect(fs.existsSync(path.resolve(ws, '../../escaped.md'))).toBe(false);
+    expect(read(ws, '.git/hooks/pre-commit')).toBeUndefined();
+    expect(core.setOutput).toHaveBeenCalledWith('generated-count', 0);
   });
 
-  it('handles multiple blueprints', async () => {
-    mockClient.listBlueprints.mockResolvedValue([
-      { id: 'bp-1', name: 'AGENTS.md', type: 'AGENTS_MD' },
-      { id: 'bp-2', name: 'CLAUDE.md', type: 'CLAUDE_MD' },
-    ]);
-    mockClient.getBlueprint
-      .mockResolvedValueOnce({ id: 'bp-1', name: 'AGENTS.md', type: 'AGENTS_MD', content: '# Agents' })
-      .mockResolvedValueOnce({ id: 'bp-2', name: 'CLAUDE.md', type: 'CLAUDE_MD', content: '# Claude' });
-    vi.mocked(fs.readFile).mockRejectedValue(new Error('ENOENT'));
-    vi.mocked(fs.mkdir).mockResolvedValue(undefined);
-    vi.mocked(fs.writeFile).mockResolvedValue(undefined);
-
-    await runGenerate(mockClient as unknown as LynxPromptClient, baseInputs, '/workspace');
-
-    expect(fs.writeFile).toHaveBeenCalledTimes(2);
-    expect(core.setOutput).toHaveBeenCalledWith('generated-count', 2);
+  it('resolveInWorkspace keeps paths inside the workspace only', () => {
+    expect(resolveInWorkspace('/w', 'a/b.md')).toBe('/w/a/b.md');
+    expect(resolveInWorkspace('/w', '../x.md')).toBeUndefined();
+    expect(resolveInWorkspace('/w', '/etc/passwd')).toBeUndefined();
+    expect(resolveInWorkspace('/w', '.git/config')).toBeUndefined();
+    expect(resolveInWorkspace('/w', '.')).toBeUndefined();
   });
 
-  it('logs error and continues when a blueprint fails to generate', async () => {
-    mockClient.listBlueprints.mockResolvedValue([
-      { id: 'bp-1', name: 'AGENTS.md', type: 'AGENTS_MD' },
-      { id: 'bp-2', name: 'CLAUDE.md', type: 'CLAUDE_MD' },
-    ]);
-    mockClient.getBlueprint
-      .mockRejectedValueOnce(new Error('API error'))
-      .mockResolvedValueOnce({ id: 'bp-2', name: 'CLAUDE.md', type: 'CLAUDE_MD', content: '# Claude' });
-    vi.mocked(fs.readFile).mockRejectedValue(new Error('ENOENT'));
-    vi.mocked(fs.mkdir).mockResolvedValue(undefined);
-    vi.mocked(fs.writeFile).mockResolvedValue(undefined);
+  describe('auto-commit (real git)', () => {
+    function gitRepo(): { ws: string; remote: string } {
+      const remote = fs.mkdtempSync(path.join(os.tmpdir(), 'lp-remote-'));
+      execFileSync('git', ['init', '-q', '--bare', remote]);
+      const ws = fs.mkdtempSync(path.join(os.tmpdir(), 'lp-ws-'));
+      const g = (...args: string[]) =>
+        execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', ...args], { cwd: ws });
+      g('init', '-q');
+      g('remote', 'add', 'origin', remote);
+      fs.writeFileSync(path.join(ws, 'README.md'), 'hi\n');
+      g('add', 'README.md');
+      g('commit', '-q', '-m', 'init');
+      g('push', '-q', '-u', 'origin', 'HEAD');
+      return { ws, remote };
+    }
 
-    await runGenerate(mockClient as unknown as LynxPromptClient, baseInputs, '/workspace');
+    it('commits and pushes the generated files', async () => {
+      const { ws, remote } = gitRepo();
+      const h = server.addHierarchy('owner/repo', rootOf(ws));
+      server.addBlueprint({ name: 'AGENTS.md', content: AGENTS, hierarchyId: h.id, repositoryPath: 'AGENTS.md' });
 
-    expect(core.error).toHaveBeenCalledWith(expect.stringContaining('Failed to generate blueprint AGENTS.md'));
-    expect(core.setOutput).toHaveBeenCalledWith('generated-count', 1);
-  });
+      await runGenerate(client, inputs({ mode: 'generate', commitChanges: true }), ws);
 
-  it('handles non-Error thrown exceptions in blueprint loop', async () => {
-    mockClient.listBlueprints.mockResolvedValue([
-      { id: 'bp-1', name: 'AGENTS.md', type: 'AGENTS_MD' },
-    ]);
-    mockClient.getBlueprint.mockRejectedValueOnce('string error');
-
-    await runGenerate(mockClient as unknown as LynxPromptClient, baseInputs, '/workspace');
-
-    expect(core.error).toHaveBeenCalledWith(expect.stringContaining('string error'));
-  });
-
-  it('creates directories recursively for nested paths', async () => {
-    mockClient.listBlueprints.mockResolvedValue([
-      { id: 'bp-1', name: '.github/copilot-instructions.md', type: 'COPILOT_INSTRUCTIONS' },
-    ]);
-    mockClient.getBlueprint.mockResolvedValue({
-      id: 'bp-1',
-      name: '.github/copilot-instructions.md',
-      type: 'COPILOT_INSTRUCTIONS',
-      content: '# Copilot',
-    });
-    vi.mocked(fs.readFile).mockRejectedValue(new Error('ENOENT'));
-    vi.mocked(fs.mkdir).mockResolvedValue(undefined);
-    vi.mocked(fs.writeFile).mockResolvedValue(undefined);
-
-    await runGenerate(mockClient as unknown as LynxPromptClient, baseInputs, '/workspace');
-
-    expect(fs.mkdir).toHaveBeenCalledWith(
-      expect.stringContaining('.github'),
-      { recursive: true },
-    );
-  });
-
-  describe('auto-commit', () => {
-    it('auto-commits when commitChanges is true and files were generated', async () => {
-      mockClient.listBlueprints.mockResolvedValue([
-        { id: 'bp-1', name: 'AGENTS.md', type: 'AGENTS_MD' },
-      ]);
-      mockClient.getBlueprint.mockResolvedValue({
-        id: 'bp-1',
-        name: 'AGENTS.md',
-        type: 'AGENTS_MD',
-        content: '# Agents new',
-      });
-      vi.mocked(fs.readFile).mockRejectedValue(new Error('ENOENT'));
-      vi.mocked(fs.mkdir).mockResolvedValue(undefined);
-      vi.mocked(fs.writeFile).mockResolvedValue(undefined);
-
-      // Mock exec calls for auto-commit: git config, git add, git diff --cached --quiet (should fail to indicate changes), git commit, git push
-      const mockExec = vi.mocked(exec);
-      mockExec
-        .mockResolvedValueOnce(undefined as any)  // git config user.name
-        .mockResolvedValueOnce(undefined as any)  // git config user.email
-        .mockResolvedValueOnce(undefined as any)  // git add
-        .mockRejectedValueOnce(new Error('changes exist') as any)  // git diff --cached --quiet (non-zero = changes)
-        .mockResolvedValueOnce(undefined as any)  // git commit
-        .mockResolvedValueOnce(undefined as any); // git push
-
-      const inputs: ActionInputs = { ...baseInputs, commitChanges: true };
-      await runGenerate(mockClient as unknown as LynxPromptClient, inputs, '/workspace');
-
-      expect(exec).toHaveBeenCalledWith(
-        'git config user.name "LynxPrompt Action"',
-        expect.any(Object),
-      );
-      expect(exec).toHaveBeenCalledWith(
-        expect.stringContaining('git commit'),
-        expect.any(Object),
-      );
+      const log = execFileSync('git', ['log', '--format=%s', '-1', 'HEAD'], { cwd: remote }).toString();
+      expect(log.trim()).toBe('chore: update AI config files from LynxPrompt');
+      const files = execFileSync('git', ['show', '--name-only', '--format=', 'HEAD'], { cwd: remote }).toString();
+      expect(files.trim()).toBe('AGENTS.md');
     });
 
-    it('does not auto-commit when commitChanges is false', async () => {
-      mockClient.listBlueprints.mockResolvedValue([
-        { id: 'bp-1', name: 'AGENTS.md', type: 'AGENTS_MD' },
-      ]);
-      mockClient.getBlueprint.mockResolvedValue({
-        id: 'bp-1',
-        name: 'AGENTS.md',
-        type: 'AGENTS_MD',
-        content: '# Agents new',
-      });
-      vi.mocked(fs.readFile).mockRejectedValue(new Error('ENOENT'));
-      vi.mocked(fs.mkdir).mockResolvedValue(undefined);
-      vi.mocked(fs.writeFile).mockResolvedValue(undefined);
+    it('stages a file whose name holds shell syntax without running it', async () => {
+      const { ws, remote } = gitRepo();
+      const h = server.addHierarchy('owner/repo', rootOf(ws));
+      const marker = path.join(ws, 'pwned');
+      const evil = `.cursor/rules/x$(touch ${marker})".mdc`;
+      server.addBlueprint({ name: 'evil', type: 'CURSOR_RULES', content: '# Evil rule here\n', hierarchyId: h.id, repositoryPath: evil });
 
-      await runGenerate(mockClient as unknown as LynxPromptClient, baseInputs, '/workspace');
+      await runGenerate(client, inputs({ mode: 'generate', commitChanges: true }), ws);
 
-      expect(exec).not.toHaveBeenCalled();
+      expect(fs.existsSync(marker)).toBe(false);
+      const files = execFileSync('git', ['show', '--name-only', '--format=', '-z', 'HEAD'], { cwd: remote }).toString();
+      expect(files.split('\0').filter(Boolean)).toEqual([evil]);
     });
 
-    it('does not auto-commit when no files were generated', async () => {
-      const content = '# Same content';
-      mockClient.listBlueprints.mockResolvedValue([
-        { id: 'bp-1', name: 'AGENTS.md', type: 'AGENTS_MD' },
-      ]);
-      mockClient.getBlueprint.mockResolvedValue({
-        id: 'bp-1',
-        name: 'AGENTS.md',
-        type: 'AGENTS_MD',
-        content,
-      });
-      vi.mocked(fs.readFile).mockResolvedValue(content);
-      vi.mocked(fs.mkdir).mockResolvedValue(undefined);
+    it('does not commit when commit-changes is off', async () => {
+      const { ws, remote } = gitRepo();
+      const h = server.addHierarchy('owner/repo', rootOf(ws));
+      server.addBlueprint({ name: 'AGENTS.md', content: AGENTS, hierarchyId: h.id, repositoryPath: 'AGENTS.md' });
 
-      const inputs: ActionInputs = { ...baseInputs, commitChanges: true };
-      await runGenerate(mockClient as unknown as LynxPromptClient, inputs, '/workspace');
+      await runGenerate(client, inputs({ mode: 'generate' }), ws);
 
-      expect(exec).not.toHaveBeenCalled();
+      const log = execFileSync('git', ['log', '--format=%s', '-1', 'HEAD'], { cwd: remote }).toString();
+      expect(log.trim()).toBe('init');
     });
 
-    it('skips commit when git diff --cached --quiet succeeds (no staged changes)', async () => {
-      mockClient.listBlueprints.mockResolvedValue([
-        { id: 'bp-1', name: 'AGENTS.md', type: 'AGENTS_MD' },
-      ]);
-      mockClient.getBlueprint.mockResolvedValue({
-        id: 'bp-1',
-        name: 'AGENTS.md',
-        type: 'AGENTS_MD',
-        content: '# Changed',
-      });
-      vi.mocked(fs.readFile).mockRejectedValue(new Error('ENOENT'));
-      vi.mocked(fs.mkdir).mockResolvedValue(undefined);
-      vi.mocked(fs.writeFile).mockResolvedValue(undefined);
+    it('reports a failed push without throwing', async () => {
+      const { ws } = gitRepo();
+      execFileSync('git', ['remote', 'set-url', 'origin', path.join(ws, 'missing')], { cwd: ws });
+      const h = server.addHierarchy('owner/repo', rootOf(ws));
+      server.addBlueprint({ name: 'AGENTS.md', content: AGENTS, hierarchyId: h.id, repositoryPath: 'AGENTS.md' });
 
-      const mockExec = vi.mocked(exec);
-      mockExec
-        .mockResolvedValueOnce(undefined as any)  // git config user.name
-        .mockResolvedValueOnce(undefined as any)  // git config user.email
-        .mockResolvedValueOnce(undefined as any)  // git add
-        .mockResolvedValueOnce(undefined as any); // git diff --cached --quiet succeeds (no changes)
-
-      const inputs: ActionInputs = { ...baseInputs, commitChanges: true };
-      await runGenerate(mockClient as unknown as LynxPromptClient, inputs, '/workspace');
-
-      expect(core.info).toHaveBeenCalledWith(expect.stringContaining('No changes to commit'));
-    });
-
-    it('handles auto-commit failure gracefully', async () => {
-      mockClient.listBlueprints.mockResolvedValue([
-        { id: 'bp-1', name: 'AGENTS.md', type: 'AGENTS_MD' },
-      ]);
-      mockClient.getBlueprint.mockResolvedValue({
-        id: 'bp-1',
-        name: 'AGENTS.md',
-        type: 'AGENTS_MD',
-        content: '# Changed',
-      });
-      vi.mocked(fs.readFile).mockRejectedValue(new Error('ENOENT'));
-      vi.mocked(fs.mkdir).mockResolvedValue(undefined);
-      vi.mocked(fs.writeFile).mockResolvedValue(undefined);
-
-      const mockExec = vi.mocked(exec);
-      mockExec.mockRejectedValue(new Error('git not configured'));
-
-      const inputs: ActionInputs = { ...baseInputs, commitChanges: true };
-      await runGenerate(mockClient as unknown as LynxPromptClient, inputs, '/workspace');
+      await runGenerate(client, inputs({ mode: 'generate', commitChanges: true }), ws);
 
       expect(core.error).toHaveBeenCalledWith(expect.stringContaining('Auto-commit failed'));
-      expect(core.warning).toHaveBeenCalledWith(expect.stringContaining('Could not auto-commit'));
     });
-
-    it('handles auto-commit failure with non-Error exception', async () => {
-      mockClient.listBlueprints.mockResolvedValue([
-        { id: 'bp-1', name: 'AGENTS.md', type: 'AGENTS_MD' },
-      ]);
-      mockClient.getBlueprint.mockResolvedValue({
-        id: 'bp-1',
-        name: 'AGENTS.md',
-        type: 'AGENTS_MD',
-        content: '# Changed',
-      });
-      vi.mocked(fs.readFile).mockRejectedValue(new Error('ENOENT'));
-      vi.mocked(fs.mkdir).mockResolvedValue(undefined);
-      vi.mocked(fs.writeFile).mockResolvedValue(undefined);
-
-      const mockExec = vi.mocked(exec);
-      mockExec.mockRejectedValue('string error');
-
-      const inputs: ActionInputs = { ...baseInputs, commitChanges: true };
-      await runGenerate(mockClient as unknown as LynxPromptClient, inputs, '/workspace');
-
-      expect(core.error).toHaveBeenCalledWith(expect.stringContaining('string error'));
-    });
-  });
-
-  it('logs generate summary', async () => {
-    mockClient.listBlueprints.mockResolvedValue([
-      { id: 'bp-1', name: 'AGENTS.md', type: 'AGENTS_MD' },
-    ]);
-    mockClient.getBlueprint.mockResolvedValue({
-      id: 'bp-1',
-      name: 'AGENTS.md',
-      type: 'AGENTS_MD',
-      content: '# New',
-    });
-    vi.mocked(fs.readFile).mockRejectedValue(new Error('ENOENT'));
-    vi.mocked(fs.mkdir).mockResolvedValue(undefined);
-    vi.mocked(fs.writeFile).mockResolvedValue(undefined);
-
-    await runGenerate(mockClient as unknown as LynxPromptClient, baseInputs, '/workspace');
-
-    expect(core.info).toHaveBeenCalledWith('--- Generate Summary ---');
-    expect(core.info).toHaveBeenCalledWith('  Generated/updated: 1 file(s)');
   });
 });

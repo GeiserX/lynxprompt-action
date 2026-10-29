@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 vi.mock('@actions/core', () => ({
   info: vi.fn(),
@@ -9,244 +9,168 @@ vi.mock('@actions/core', () => ({
   setFailed: vi.fn(),
 }));
 
-vi.mock('../../src/utils/detector', () => ({
-  parseFilePatterns: vi.fn((input: string) =>
-    input
-      .split(/[,\n]/)
-      .map((p: string) => p.trim())
-      .filter((p: string) => p.length > 0),
-  ),
-  detectConfigFiles: vi.fn(),
-}));
-
 import * as core from '@actions/core';
 import { runSync } from '../../src/modes/sync';
-import { detectConfigFiles } from '../../src/utils/detector';
 import { LynxPromptClient } from '../../src/api';
-import { ActionInputs, DetectedFile } from '../../src/types';
+import { contentChecksum } from '../../src/utils/checksum';
+import { FakeLynxPrompt, TOKEN } from '../fakeServer';
+import { inputs, makeWorkspace, rootOf } from '../workspace';
+
+const AGENTS = '# Agents\n\nUse tabs.\n';
+const CLAUDE = '# Claude\n\nRun the tests.\n';
 
 describe('runSync', () => {
-  let mockClient: {
-    listBlueprints: ReturnType<typeof vi.fn>;
-    createBlueprint: ReturnType<typeof vi.fn>;
-    updateBlueprint: ReturnType<typeof vi.fn>;
-    getBlueprint: ReturnType<typeof vi.fn>;
-  };
-
-  const baseInputs: ActionInputs = {
-    mode: 'sync',
-    token: 'lp_test',
-    apiUrl: 'https://lynxprompt.geiser.cloud',
-    files: '**/{AGENTS,CLAUDE}.md',
-    visibility: 'PRIVATE',
-    platforms: [],
-    failOnDrift: false,
-    commitChanges: false,
-  };
+  let server: FakeLynxPrompt;
+  let client: LynxPromptClient;
 
   beforeEach(() => {
     vi.clearAllMocks();
-    mockClient = {
-      listBlueprints: vi.fn().mockResolvedValue([]),
-      createBlueprint: vi.fn(),
-      updateBlueprint: vi.fn(),
-      getBlueprint: vi.fn(),
-    };
+    server = new FakeLynxPrompt();
+    server.install();
+    client = new LynxPromptClient('https://lp.example', TOKEN);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
   });
 
   it('outputs synced-count 0 and warns when no files detected', async () => {
-    vi.mocked(detectConfigFiles).mockResolvedValue([]);
+    const ws = makeWorkspace({});
 
-    await runSync(mockClient as unknown as LynxPromptClient, baseInputs, '/workspace');
+    await runSync(client, inputs(), ws);
 
     expect(core.warning).toHaveBeenCalledWith(expect.stringContaining('No AI configuration files'));
     expect(core.setOutput).toHaveBeenCalledWith('synced-count', 0);
+    expect(server.writes()).toEqual([]);
   });
 
-  it('creates a new blueprint when no matching cloud blueprint exists', async () => {
-    const mockFiles: DetectedFile[] = [
-      {
-        path: '/workspace/AGENTS.md',
-        relativePath: 'AGENTS.md',
-        type: 'AGENTS_MD',
-        content: '# Agents\n\nSome content here.',
-        blueprintName: 'AGENTS.md',
-      },
-    ];
-    vi.mocked(detectConfigFiles).mockResolvedValue(mockFiles);
-    mockClient.listBlueprints.mockResolvedValue([]);
-    mockClient.createBlueprint.mockResolvedValue({ id: 'bp-1' });
+  it('uploads every file of the default pattern into the repo hierarchy', async () => {
+    const ws = makeWorkspace({
+      'AGENTS.md': AGENTS,
+      'CLAUDE.md': CLAUDE,
+      'packages/api/AGENTS.md': AGENTS,
+      '.cursor/rules/style.mdc': '# Style\n\nNo semicolons.\n',
+    });
 
-    await runSync(mockClient as unknown as LynxPromptClient, baseInputs, '/workspace');
+    await runSync(client, inputs(), ws);
 
-    expect(mockClient.createBlueprint).toHaveBeenCalledWith({
+    expect(server.hierarchies).toEqual([
+      expect.objectContaining({ name: expect.any(String), repositoryRoot: rootOf(ws) }),
+    ]);
+    const h = server.hierarchies[0];
+    expect(server.blueprints.map((b) => [b.repositoryPath, b.type, b.hierarchyId, b.visibility]).sort()).toEqual([
+      ['.cursor/rules/style.mdc', 'CURSOR_RULES', h.id, 'PRIVATE'],
+      ['AGENTS.md', 'AGENTS_MD', h.id, 'PRIVATE'],
+      ['CLAUDE.md', 'CLAUDE_MD', h.id, 'PRIVATE'],
+      ['packages/api/AGENTS.md', 'AGENTS_MD', h.id, 'PRIVATE'],
+    ]);
+    expect(core.setOutput).toHaveBeenCalledWith('synced-count', 4);
+    expect(core.setFailed).not.toHaveBeenCalled();
+  });
+
+  it('a second sync of unchanged files sends no write but the hierarchy lookup', async () => {
+    const ws = makeWorkspace({ 'AGENTS.md': AGENTS, 'CLAUDE.md': CLAUDE });
+    await runSync(client, inputs(), ws);
+    server.calls = [];
+
+    await runSync(client, inputs(), ws);
+
+    expect(server.writes().map((c) => c.path)).toEqual(['/api/v1/hierarchies']);
+    expect(server.blueprints).toHaveLength(2);
+    expect(core.setOutput).toHaveBeenLastCalledWith('synced-count', 0);
+  });
+
+  it('treats CRLF and a trailing newline as unchanged, like the server checksum', async () => {
+    const ws = makeWorkspace({ 'AGENTS.md': '# Agents\r\n\r\nUse tabs.\r\n' });
+    const h = server.addHierarchy('owner/repo', rootOf(ws));
+    server.addBlueprint({ name: 'AGENTS.md', content: '# Agents\n\nUse tabs.', hierarchyId: h.id, repositoryPath: 'AGENTS.md' });
+
+    await runSync(client, inputs(), ws);
+
+    expect(server.calls.filter((c) => c.method === 'PUT')).toEqual([]);
+  });
+
+  it('updates a changed file and leaves its visibility alone when the input is unset', async () => {
+    const ws = makeWorkspace({ 'AGENTS.md': '# Agents\n\nUse spaces now.\n' });
+    const h = server.addHierarchy('owner/repo', rootOf(ws));
+    const bp = server.addBlueprint({
       name: 'AGENTS.md',
-      type: 'AGENTS_MD',
-      content: '# Agents\n\nSome content here.',
-      visibility: 'PRIVATE',
-      description: 'Auto-synced from AGENTS.md',
+      content: AGENTS,
+      visibility: 'PUBLIC',
+      hierarchyId: h.id,
+      repositoryPath: 'AGENTS.md',
     });
-    expect(core.setOutput).toHaveBeenCalledWith('synced-count', 1);
-  });
 
-  it('updates an existing blueprint when checksums differ', async () => {
-    const mockFiles: DetectedFile[] = [
-      {
-        path: '/workspace/AGENTS.md',
-        relativePath: 'AGENTS.md',
-        type: 'AGENTS_MD',
-        content: '# Agents\n\nUpdated content.',
-        blueprintName: 'AGENTS.md',
-      },
-    ];
-    vi.mocked(detectConfigFiles).mockResolvedValue(mockFiles);
-    mockClient.listBlueprints.mockResolvedValue([
-      { id: 'bp-1', name: 'AGENTS.md', type: 'AGENTS_MD', content_checksum: 'old-checksum' },
-    ]);
-    mockClient.updateBlueprint.mockResolvedValue({ id: 'bp-1' });
+    await runSync(client, inputs(), ws);
 
-    await runSync(mockClient as unknown as LynxPromptClient, baseInputs, '/workspace');
-
-    expect(mockClient.updateBlueprint).toHaveBeenCalledWith('bp-1', {
-      content: '# Agents\n\nUpdated content.',
-      visibility: 'PRIVATE',
+    const put = server.calls.find((c) => c.method === 'PUT')!;
+    expect(put.body).toEqual({
+      content: '# Agents\n\nUse spaces now.\n',
+      expected_checksum: contentChecksum(AGENTS),
     });
+    expect(bp.visibility).toBe('PUBLIC');
+    expect(bp.content).toBe('# Agents\n\nUse spaces now.\n');
     expect(core.setOutput).toHaveBeenCalledWith('synced-count', 1);
   });
 
-  it('skips update when checksums match', async () => {
-    const content = '# Agents\n\nSame content.';
-    // Compute the actual SHA-256 checksum that the code will compute
-    const crypto = require('crypto');
-    const checksum = crypto.createHash('sha256').update(content, 'utf-8').digest('hex');
+  it('applies visibility and team-id on update when the workflow sets them', async () => {
+    const ws = makeWorkspace({ 'AGENTS.md': '# Agents\n\nUse spaces now.\n' });
+    const h = server.addHierarchy('owner/repo', rootOf(ws));
+    server.addBlueprint({ name: 'AGENTS.md', content: AGENTS, hierarchyId: h.id, repositoryPath: 'AGENTS.md' });
 
-    const mockFiles: DetectedFile[] = [
-      {
-        path: '/workspace/AGENTS.md',
-        relativePath: 'AGENTS.md',
-        type: 'AGENTS_MD',
-        content,
-        blueprintName: 'AGENTS.md',
-      },
-    ];
-    vi.mocked(detectConfigFiles).mockResolvedValue(mockFiles);
-    mockClient.listBlueprints.mockResolvedValue([
-      { id: 'bp-1', name: 'AGENTS.md', type: 'AGENTS_MD', content_checksum: checksum },
-    ]);
+    await runSync(client, inputs({ visibility: 'TEAM', teamId: 'team_2' }), ws);
 
-    await runSync(mockClient as unknown as LynxPromptClient, baseInputs, '/workspace');
-
-    expect(mockClient.updateBlueprint).not.toHaveBeenCalled();
-    expect(mockClient.createBlueprint).not.toHaveBeenCalled();
-    expect(core.setOutput).toHaveBeenCalledWith('synced-count', 0);
+    expect(server.calls.find((c) => c.method === 'PUT')!.body).toMatchObject({
+      visibility: 'TEAM',
+      team_id: 'team_2',
+    });
   });
 
-  it('handles multiple files with mixed actions', async () => {
-    const contentA = '# Agents file';
-    const crypto = require('crypto');
-    const checksumA = crypto.createHash('sha256').update(contentA, 'utf-8').digest('hex');
+  it('sends team-id on create so a user in several teams can sync TEAM blueprints', async () => {
+    server.teamCount = 2;
+    const ws = makeWorkspace({ 'AGENTS.md': AGENTS });
 
-    const mockFiles: DetectedFile[] = [
-      {
-        path: '/workspace/AGENTS.md',
-        relativePath: 'AGENTS.md',
-        type: 'AGENTS_MD',
-        content: contentA,
-        blueprintName: 'AGENTS.md',
-      },
-      {
-        path: '/workspace/CLAUDE.md',
-        relativePath: 'CLAUDE.md',
-        type: 'CLAUDE_MD',
-        content: '# Claude file',
-        blueprintName: 'CLAUDE.md',
-      },
-    ];
-    vi.mocked(detectConfigFiles).mockResolvedValue(mockFiles);
-    mockClient.listBlueprints.mockResolvedValue([
-      { id: 'bp-1', name: 'AGENTS.md', type: 'AGENTS_MD', content_checksum: checksumA },
-    ]);
-    mockClient.createBlueprint.mockResolvedValue({ id: 'bp-2' });
+    await runSync(client, inputs({ visibility: 'TEAM', teamId: 'team_2' }), ws);
 
-    await runSync(mockClient as unknown as LynxPromptClient, baseInputs, '/workspace');
-
-    // AGENTS.md unchanged (checksum match), CLAUDE.md created
-    expect(mockClient.updateBlueprint).not.toHaveBeenCalled();
-    expect(mockClient.createBlueprint).toHaveBeenCalledTimes(1);
-    expect(core.setOutput).toHaveBeenCalledWith('synced-count', 1);
+    expect(server.blueprints[0]).toMatchObject({ visibility: 'TEAM', teamId: 'team_2' });
+    expect(core.setFailed).not.toHaveBeenCalled();
   });
 
-  it('logs error and continues when syncing a file fails', async () => {
-    const mockFiles: DetectedFile[] = [
-      {
-        path: '/workspace/AGENTS.md',
-        relativePath: 'AGENTS.md',
-        type: 'AGENTS_MD',
-        content: '# Agents',
-        blueprintName: 'AGENTS.md',
-      },
-      {
-        path: '/workspace/CLAUDE.md',
-        relativePath: 'CLAUDE.md',
-        type: 'CLAUDE_MD',
-        content: '# Claude',
-        blueprintName: 'CLAUDE.md',
-      },
-    ];
-    vi.mocked(detectConfigFiles).mockResolvedValue(mockFiles);
-    mockClient.listBlueprints.mockResolvedValue([]);
-    mockClient.createBlueprint
-      .mockRejectedValueOnce(new Error('Network error'))
-      .mockResolvedValueOnce({ id: 'bp-2' });
+  it('never matches a blueprint of another repository or outside any hierarchy', async () => {
+    const ws = makeWorkspace({ 'AGENTS.md': AGENTS });
+    const other = server.addHierarchy('owner/other', 'ffffffffffffffff');
+    const foreign = server.addBlueprint({ name: 'AGENTS.md', content: '# Other repo agents', hierarchyId: other.id, repositoryPath: 'AGENTS.md' });
+    const loose = server.addBlueprint({ name: 'AGENTS.md', content: '# Web only agents' });
 
-    await runSync(mockClient as unknown as LynxPromptClient, baseInputs, '/workspace');
+    await runSync(client, inputs(), ws);
+
+    expect(foreign.content).toBe('# Other repo agents');
+    expect(loose.content).toBe('# Web only agents');
+    expect(server.blueprints).toHaveLength(3);
+  });
+
+  it('finds its blueprint beyond the first page instead of creating a duplicate', async () => {
+    const ws = makeWorkspace({ 'AGENTS.md': AGENTS });
+    const h = server.addHierarchy('owner/repo', rootOf(ws));
+    for (let i = 0; i < 120; i++) {
+      server.addBlueprint({ name: `other-${i}`, content: `# Other blueprint ${i}` });
+    }
+    server.addBlueprint({ name: 'AGENTS.md', content: AGENTS, hierarchyId: h.id, repositoryPath: 'AGENTS.md' });
+
+    await runSync(client, inputs(), ws);
+
+    expect(server.blueprints).toHaveLength(121);
+    expect(server.calls.filter((c) => c.method === 'POST' && c.path === '/api/v1/blueprints')).toEqual([]);
+  });
+
+  it('fails the job when a file cannot be synced, and still syncs the others', async () => {
+    const ws = makeWorkspace({ 'AGENTS.md': 'short', 'CLAUDE.md': CLAUDE });
+
+    await runSync(client, inputs(), ws);
 
     expect(core.error).toHaveBeenCalledWith(expect.stringContaining('Failed to sync AGENTS.md'));
-    // Second file still succeeds
+    expect(server.blueprints.map((b) => b.repositoryPath)).toEqual(['CLAUDE.md']);
     expect(core.setOutput).toHaveBeenCalledWith('synced-count', 1);
-  });
-
-  it('handles non-Error thrown exceptions', async () => {
-    const mockFiles: DetectedFile[] = [
-      {
-        path: '/workspace/AGENTS.md',
-        relativePath: 'AGENTS.md',
-        type: 'AGENTS_MD',
-        content: '# Agents',
-        blueprintName: 'AGENTS.md',
-      },
-    ];
-    vi.mocked(detectConfigFiles).mockResolvedValue(mockFiles);
-    mockClient.listBlueprints.mockResolvedValue([]);
-    mockClient.createBlueprint.mockRejectedValueOnce('string error');
-
-    await runSync(mockClient as unknown as LynxPromptClient, baseInputs, '/workspace');
-
-    expect(core.error).toHaveBeenCalledWith(expect.stringContaining('string error'));
-    expect(core.setOutput).toHaveBeenCalledWith('synced-count', 0);
-  });
-
-  it('logs sync summary with correct counts', async () => {
-    const mockFiles: DetectedFile[] = [
-      {
-        path: '/workspace/CLAUDE.md',
-        relativePath: 'CLAUDE.md',
-        type: 'CLAUDE_MD',
-        content: '# Claude new',
-        blueprintName: 'CLAUDE.md',
-      },
-    ];
-    vi.mocked(detectConfigFiles).mockResolvedValue(mockFiles);
-    mockClient.listBlueprints.mockResolvedValue([
-      { id: 'bp-1', name: 'CLAUDE.md', type: 'CLAUDE_MD', content_checksum: 'mismatched' },
-    ]);
-    mockClient.updateBlueprint.mockResolvedValue({ id: 'bp-1' });
-
-    await runSync(mockClient as unknown as LynxPromptClient, baseInputs, '/workspace');
-
-    expect(core.info).toHaveBeenCalledWith('--- Sync Summary ---');
-    expect(core.info).toHaveBeenCalledWith('  Created: 0');
-    expect(core.info).toHaveBeenCalledWith('  Updated: 1');
-    expect(core.info).toHaveBeenCalledWith('  Unchanged: 0');
+    expect(core.setFailed).toHaveBeenCalledWith(expect.stringContaining('Failed to sync 1 of 2 file(s): AGENTS.md'));
   });
 });

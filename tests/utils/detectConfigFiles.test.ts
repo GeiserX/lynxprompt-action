@@ -88,10 +88,11 @@ describe('detectConfigFiles', () => {
     await detectConfigFiles('/workspace', ['**/*.md']);
 
     const createCallArg = vi.mocked(glob.create).mock.calls[0][0];
-    expect(createCallArg).toContain('!**/node_modules/**');
-    expect(createCallArg).toContain('!**/.git/**');
-    expect(createCallArg).toContain('!**/dist/**');
-    expect(createCallArg).toContain('!**/vendor/**');
+    expect(createCallArg).toContain('/workspace/**/*.md');
+    expect(createCallArg).toContain('!/workspace/**/node_modules/**');
+    expect(createCallArg).toContain('!/workspace/**/.git/**');
+    expect(createCallArg).toContain('!/workspace/**/dist/**');
+    expect(createCallArg).toContain('!/workspace/**/vendor/**');
   });
 
   it('passes followSymbolicLinks false to glob', async () => {

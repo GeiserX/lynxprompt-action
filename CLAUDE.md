@@ -30,10 +30,12 @@ uses: GeiserX/lynxprompt-action@my-branch
 - `src/modes/{sync,validate,generate,diff}.ts` — each mode is self-contained
 - `src/utils/detector.ts` — file detection via glob patterns
 - `src/utils/mapper.ts` — blueprint type mapping
+- `src/utils/repo.ts` — the repository's LynxPrompt hierarchy; sync, diff and generate only see its blueprints
+- `src/utils/checksum.ts` — the server's content checksum
 - `src/utils/comment.ts` — PR comment posting
 - `src/types.ts` — shared interfaces (ActionInputs, ActionMode, Blueprint, etc.)
 - `dist/index.js` — bundled with `@vercel/ncc`, MUST be committed
-- `action.yml` — GitHub Action definition (inputs: mode, token, api-url, files, visibility, platforms)
+- `action.yml` — GitHub Action definition (inputs: mode, token, api-url, files, visibility, team-id, platforms, fail-on-drift, commit-changes, github-token)
 - `vitest.config.ts` — test configuration
 
 ## Key Rules

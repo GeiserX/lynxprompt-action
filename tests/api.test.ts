@@ -8,204 +8,121 @@ vi.mock('@actions/core', () => ({
 }));
 
 import { LynxPromptClient } from '../src/api';
+import { FakeLynxPrompt, TOKEN } from './fakeServer';
+
+const BASE = 'https://lp.example';
 
 describe('LynxPromptClient', () => {
-  let fetchSpy: ReturnType<typeof vi.fn>;
+  let server: FakeLynxPrompt;
+  let client: LynxPromptClient;
 
   beforeEach(() => {
-    fetchSpy = vi.fn();
-    vi.stubGlobal('fetch', fetchSpy);
+    server = new FakeLynxPrompt();
+    server.install();
+    client = new LynxPromptClient(BASE, TOKEN);
   });
 
   afterEach(() => {
-    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
   });
 
-  it('strips trailing slash from base URL', () => {
-    const client = new LynxPromptClient('https://example.com/', 'lp_test');
-    // Access private field via any
-    expect((client as any).baseUrl).toBe('https://example.com');
-  });
-
-  it('strips multiple trailing slashes', () => {
-    const client = new LynxPromptClient('https://example.com///', 'lp_test');
-    expect((client as any).baseUrl).toBe('https://example.com');
+  it('strips trailing slashes from base URL', () => {
+    expect((new LynxPromptClient('https://example.com///', 'lp_x') as any).baseUrl).toBe(
+      'https://example.com',
+    );
   });
 
   describe('listBlueprints', () => {
-    it('fetches blueprints successfully', async () => {
-      const mockBlueprints = [
-        { id: '1', name: 'test', type: 'AGENTS_MD', content_checksum: 'abc' },
-      ];
-      fetchSpy.mockResolvedValue({
-        ok: true,
-        headers: new Headers({ 'content-type': 'application/json' }),
-        json: () => Promise.resolve(mockBlueprints),
-      });
+    it('unwraps the { blueprints, total, has_more } list response', async () => {
+      server.addBlueprint({ name: 'AGENTS.md', content: '# Agents rules here' });
 
-      const client = new LynxPromptClient('https://example.com', 'lp_test');
       const result = await client.listBlueprints();
 
-      expect(result).toEqual(mockBlueprints);
-      expect(fetchSpy).toHaveBeenCalledWith(
-        'https://example.com/api/v1/blueprints',
-        expect.objectContaining({
-          method: 'GET',
-          headers: expect.objectContaining({
-            Authorization: 'Bearer lp_test',
-          }),
-        }),
+      expect(result).toHaveLength(1);
+      expect(result[0]).toMatchObject({ name: 'AGENTS.md', type: 'AGENTS_MD' });
+      expect(result[0].content_checksum).toMatch(/^[0-9a-f]{16}$/);
+    });
+
+    it('fetches every page when there are more than 100 blueprints', async () => {
+      for (let i = 0; i < 230; i++) {
+        server.addBlueprint({ name: `bp-${i}`, content: `# Blueprint number ${i}` });
+      }
+
+      const result = await client.listBlueprints();
+
+      expect(result.map((b) => b.name)).toEqual(
+        Array.from({ length: 230 }, (_, i) => `bp-${i}`),
       );
+      expect(server.calls.map((c) => c.path)).toEqual([
+        '/api/v1/blueprints?limit=100&offset=0',
+        '/api/v1/blueprints?limit=100&offset=100',
+        '/api/v1/blueprints?limit=100&offset=200',
+      ]);
+    });
+
+    it('throws when the body is not a wrapped list', async () => {
+      vi.stubGlobal('fetch', async () =>
+        new Response('[]', { status: 200, headers: { 'Content-Type': 'application/json' } }),
+      );
+      await expect(client.listBlueprints()).rejects.toThrow('no "blueprints" array');
     });
 
     it('throws on API error', async () => {
-      fetchSpy.mockResolvedValue({
-        ok: false,
-        status: 401,
-        statusText: 'Unauthorized',
-        text: () => Promise.resolve('Invalid token'),
-      });
-
-      const client = new LynxPromptClient('https://example.com', 'lp_test');
-      await expect(client.listBlueprints()).rejects.toThrow('LynxPrompt API error: 401');
+      const bad = new LynxPromptClient(BASE, 'lp_wrong');
+      await expect(bad.listBlueprints()).rejects.toThrow('LynxPrompt API error: 401');
     });
   });
 
-  describe('getBlueprint', () => {
-    it('fetches a single blueprint', async () => {
-      const mockBlueprint = { id: '1', name: 'test', content: '# Test' };
-      fetchSpy.mockResolvedValue({
-        ok: true,
-        headers: new Headers({ 'content-type': 'application/json' }),
-        json: () => Promise.resolve(mockBlueprint),
-      });
+  it('getBlueprint unwraps { blueprint }', async () => {
+    const bp = server.addBlueprint({ name: 'CLAUDE.md', type: 'CLAUDE_MD', content: '# Claude rules\n' });
 
-      const client = new LynxPromptClient('https://example.com', 'lp_test');
-      const result = await client.getBlueprint('1');
+    const result = await client.getBlueprint(bp.id);
 
-      expect(result).toEqual(mockBlueprint);
-      expect(fetchSpy).toHaveBeenCalledWith(
-        'https://example.com/api/v1/blueprints/1',
-        expect.any(Object),
-      );
-    });
+    expect(result).toMatchObject({ id: bp.id, content: '# Claude rules\n' });
   });
 
-  describe('createBlueprint', () => {
-    it('sends POST with blueprint data', async () => {
-      const data = { name: 'test', type: 'AGENTS_MD' as const, content: '# Test', visibility: 'PRIVATE' as const };
-      fetchSpy.mockResolvedValue({
-        ok: true,
-        headers: new Headers({ 'content-type': 'application/json' }),
-        json: () => Promise.resolve({ id: '1', ...data }),
-      });
-
-      const client = new LynxPromptClient('https://example.com', 'lp_test');
-      const result = await client.createBlueprint(data);
-
-      expect(result.id).toBe('1');
-      expect(fetchSpy).toHaveBeenCalledWith(
-        'https://example.com/api/v1/blueprints',
-        expect.objectContaining({
-          method: 'POST',
-          body: JSON.stringify(data),
-        }),
-      );
+  it('createBlueprint unwraps { success, blueprint }', async () => {
+    const result = await client.createBlueprint({
+      name: 'AGENTS.md',
+      type: 'AGENTS_MD',
+      content: '# Agents rules here',
+      visibility: 'PRIVATE',
     });
+
+    expect(result.id).toMatch(/^bp_/);
+    expect(server.blueprints).toHaveLength(1);
   });
 
-  describe('updateBlueprint', () => {
-    it('sends PUT with update data', async () => {
-      const data = { content: '# Updated' };
-      fetchSpy.mockResolvedValue({
-        ok: true,
-        headers: new Headers({ 'content-type': 'application/json' }),
-        json: () => Promise.resolve({ id: '1', ...data }),
-      });
+  it('updateBlueprint unwraps { success, blueprint }', async () => {
+    const bp = server.addBlueprint({ name: 'AGENTS.md', content: '# Agents rules here' });
 
-      const client = new LynxPromptClient('https://example.com', 'lp_test');
-      await client.updateBlueprint('1', data);
+    const result = await client.updateBlueprint(bp.id, { content: '# New agents rules' });
 
-      expect(fetchSpy).toHaveBeenCalledWith(
-        'https://example.com/api/v1/blueprints/1',
-        expect.objectContaining({
-          method: 'PUT',
-          body: JSON.stringify(data),
-        }),
-      );
-    });
+    expect(result).toMatchObject({ id: bp.id, content: '# New agents rules' });
   });
 
-  describe('findBlueprint', () => {
-    it('finds a blueprint by name and type', async () => {
-      const mockBlueprints = [
-        { id: '1', name: 'AGENTS.md', type: 'AGENTS_MD', content_checksum: 'abc' },
-        { id: '2', name: 'CLAUDE.md', type: 'CLAUDE_MD', content_checksum: 'def' },
-      ];
-      fetchSpy.mockResolvedValue({
-        ok: true,
-        headers: new Headers({ 'content-type': 'application/json' }),
-        json: () => Promise.resolve(mockBlueprints),
-      });
+  it('ensureHierarchy returns the same hierarchy for the same repository root', async () => {
+    const a = await client.ensureHierarchy('owner/repo', 'abc123');
+    const b = await client.ensureHierarchy('owner/repo', 'abc123');
 
-      const client = new LynxPromptClient('https://example.com', 'lp_test');
-      const result = await client.findBlueprint('CLAUDE.md', 'CLAUDE_MD');
-
-      expect(result?.id).toBe('2');
-    });
-
-    it('returns undefined when not found', async () => {
-      fetchSpy.mockResolvedValue({
-        ok: true,
-        headers: new Headers({ 'content-type': 'application/json' }),
-        json: () => Promise.resolve([]),
-      });
-
-      const client = new LynxPromptClient('https://example.com', 'lp_test');
-      const result = await client.findBlueprint('nonexistent', 'AGENTS_MD');
-
-      expect(result).toBeUndefined();
-    });
+    expect(a.id).toBe(b.id);
+    expect(await client.listHierarchies()).toHaveLength(1);
   });
 
   describe('validateToken', () => {
-    it('returns true for valid token', async () => {
-      fetchSpy.mockResolvedValue({
-        ok: true,
-        headers: new Headers({ 'content-type': 'application/json' }),
-        json: () => Promise.resolve([]),
-      });
-
-      const client = new LynxPromptClient('https://example.com', 'lp_test');
-      const valid = await client.validateToken();
-      expect(valid).toBe(true);
+    it('returns true for a valid token', async () => {
+      expect(await client.validateToken()).toBe(true);
     });
 
-    it('returns false for invalid token', async () => {
-      fetchSpy.mockResolvedValue({
-        ok: false,
-        status: 401,
-        statusText: 'Unauthorized',
-        text: () => Promise.resolve('Invalid'),
-      });
-
-      const client = new LynxPromptClient('https://example.com', 'lp_test');
-      const valid = await client.validateToken();
-      expect(valid).toBe(false);
+    it('returns false for an invalid token', async () => {
+      expect(await new LynxPromptClient(BASE, 'lp_wrong').validateToken()).toBe(false);
     });
-  });
 
-  describe('request handling', () => {
-    it('returns empty object for non-JSON response', async () => {
-      fetchSpy.mockResolvedValue({
-        ok: true,
-        headers: new Headers({ 'content-type': 'text/plain' }),
-      });
-
-      const client = new LynxPromptClient('https://example.com', 'lp_test');
-      // Use updateBlueprint which returns the response
-      const result = await client.updateBlueprint('1', { content: 'x' });
-      expect(result).toEqual({});
+    it('returns false when the URL answers 200 with HTML', async () => {
+      vi.stubGlobal('fetch', async () =>
+        new Response('<html></html>', { status: 200, headers: { 'Content-Type': 'text/html' } }),
+      );
+      expect(await client.validateToken()).toBe(false);
     });
   });
 });

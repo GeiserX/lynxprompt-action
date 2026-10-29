@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { mapFileToType, buildBlueprintName, typeToDefaultPath } from '../../src/utils/mapper';
+import { mapFileToType, buildBlueprintName } from '../../src/utils/mapper';
 
 describe('mapFileToType', () => {
   it('maps AGENTS.md at root', () => {
@@ -59,47 +59,5 @@ describe('buildBlueprintName', () => {
 
   it('removes leading ./', () => {
     expect(buildBlueprintName('./AGENTS.md', '/workspace')).toBe('AGENTS.md');
-  });
-});
-
-describe('typeToDefaultPath', () => {
-  it('returns AGENTS.md for AGENTS_MD', () => {
-    expect(typeToDefaultPath('AGENTS_MD')).toBe('AGENTS.md');
-  });
-
-  it('returns CLAUDE.md for CLAUDE_MD', () => {
-    expect(typeToDefaultPath('CLAUDE_MD')).toBe('CLAUDE.md');
-  });
-
-  it('returns AIDER.md for AIDER_MD', () => {
-    expect(typeToDefaultPath('AIDER_MD')).toBe('AIDER.md');
-  });
-
-  it('returns .github/copilot-instructions.md for COPILOT_INSTRUCTIONS', () => {
-    expect(typeToDefaultPath('COPILOT_INSTRUCTIONS')).toBe('.github/copilot-instructions.md');
-  });
-
-  it('returns .windsurfrules for WINDSURF_RULES', () => {
-    expect(typeToDefaultPath('WINDSURF_RULES')).toBe('.windsurfrules');
-  });
-
-  it('uses name if it contains .cursor/rules/ for CURSOR_RULES', () => {
-    expect(typeToDefaultPath('CURSOR_RULES', '.cursor/rules/my-rule.mdc')).toBe('.cursor/rules/my-rule.mdc');
-  });
-
-  it('generates cursor path from name if not a path', () => {
-    expect(typeToDefaultPath('CURSOR_RULES', 'my-rule')).toBe('.cursor/rules/my-rule.mdc');
-  });
-
-  it('falls back to default for CURSOR_RULES without name', () => {
-    expect(typeToDefaultPath('CURSOR_RULES')).toBe('.cursor/rules/default.mdc');
-  });
-
-  it('falls back to name for CUSTOM type', () => {
-    expect(typeToDefaultPath('CUSTOM' as any, 'my-file.txt')).toBe('my-file.txt');
-  });
-
-  it('falls back to unknown-config.md for CUSTOM type without name', () => {
-    expect(typeToDefaultPath('CUSTOM' as any)).toBe('unknown-config.md');
   });
 });
