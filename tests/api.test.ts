@@ -118,11 +118,28 @@ describe('LynxPromptClient', () => {
       expect(await new LynxPromptClient(BASE, 'lp_wrong').validateToken()).toBe(false);
     });
 
-    it('returns false when the URL answers 200 with HTML', async () => {
+    it('says what is wrong when the URL answers 200 with HTML', async () => {
       vi.stubGlobal('fetch', async () =>
         new Response('<html></html>', { status: 200, headers: { 'Content-Type': 'text/html' } }),
       );
+      await expect(client.validateToken()).rejects.toThrow(/did not return JSON/);
+    });
+
+    it('returns false when the server refuses the token with 403', async () => {
+      vi.stubGlobal('fetch', async () => new Response('forbidden', { status: 403 }));
       expect(await client.validateToken()).toBe(false);
+    });
+
+    it('rethrows a server error instead of blaming the token', async () => {
+      vi.stubGlobal('fetch', async () => new Response('down', { status: 503, statusText: 'Service Unavailable' }));
+      await expect(client.validateToken()).rejects.toThrow(/503 Service Unavailable/);
+    });
+
+    it('rethrows a network error instead of blaming the token', async () => {
+      vi.stubGlobal('fetch', async () => {
+        throw new TypeError('fetch failed');
+      });
+      await expect(client.validateToken()).rejects.toThrow('fetch failed');
     });
   });
 });

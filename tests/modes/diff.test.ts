@@ -124,6 +124,6 @@ describe('runDiff', () => {
 
     await runDiff(client, inputs({ mode: 'diff', githubToken: 'ghs_x' }), ws);
 
-    expect(upsertPrComment).toHaveBeenCalledWith('diff comment body', 'ghs_x');
+    expect(upsertPrComment).toHaveBeenCalledWith('diff', 'diff comment body', 'ghs_x');
   });
 });

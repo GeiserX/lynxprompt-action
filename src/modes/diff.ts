@@ -126,7 +126,7 @@ export async function runDiff(
 
   // Post PR comment
   const commentBody = formatDiffComment(results);
-  await upsertPrComment(commentBody, inputs.githubToken);
+  await upsertPrComment('diff', commentBody, inputs.githubToken);
 
   // Set outputs
   core.setOutput('drift-detected', hasDrift);

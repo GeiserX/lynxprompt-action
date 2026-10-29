@@ -81,7 +81,7 @@ export async function runValidate(
 
   // Post PR comment
   const commentBody = formatValidationComment(results, allPassed);
-  await upsertPrComment(commentBody, inputs.githubToken);
+  await upsertPrComment('validate', commentBody, inputs.githubToken);
 
   // Set outputs
   core.setOutput('validation-passed', allPassed);

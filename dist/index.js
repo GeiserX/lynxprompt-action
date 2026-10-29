@@ -40,10 +40,19 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.LynxPromptClient = void 0;
+exports.LynxPromptClient = exports.ApiError = void 0;
 const core = __importStar(__nccwpck_require__(7484));
 /** The v1 API caps `limit` at 100. */
 const PAGE_SIZE = 100;
+/** An HTTP error answer from the API, with its status. */
+class ApiError extends Error {
+    status;
+    constructor(status, message) {
+        super(message);
+        this.status = status;
+    }
+}
+exports.ApiError = ApiError;
 class LynxPromptClient {
     baseUrl;
     token;
@@ -68,7 +77,7 @@ class LynxPromptClient {
         });
         if (!response.ok) {
             const text = await response.text();
-            throw new Error(`LynxPrompt API error: ${response.status} ${response.statusText} - ${text}`);
+            throw new ApiError(response.status, `LynxPrompt API error: ${response.status} ${response.statusText} - ${text}`);
         }
         const contentType = response.headers.get('content-type');
         if (contentType && contentType.includes('application/json')) {
@@ -141,15 +150,20 @@ class LynxPromptClient {
         return result.hierarchy;
     }
     /**
-     * Validate that the token is valid by making a list request.
+     * Validate that the token is valid by making a list request. False only
+     * when the server rejects the token (401, 403); an outage, a network error
+     * or a URL that is not the API throws with its own message.
      */
     async validateToken() {
         try {
             await this.request('GET', '/api/v1/blueprints?limit=1');
             return true;
         }
-        catch {
-            return false;
+        catch (error) {
+            if (error instanceof ApiError && (error.status === 401 || error.status === 403)) {
+                return false;
+            }
+            throw error;
         }
     }
 }
@@ -453,7 +467,7 @@ async function runDiff(client, inputs, workspace) {
     }
     // Post PR comment
     const commentBody = (0, comment_1.formatDiffComment)(results);
-    await (0, comment_1.upsertPrComment)(commentBody, inputs.githubToken);
+    await (0, comment_1.upsertPrComment)('diff', commentBody, inputs.githubToken);
     // Set outputs
     core.setOutput('drift-detected', hasDrift);
     // Optionally fail
@@ -602,14 +616,15 @@ async function runGenerate(client, inputs, workspace) {
     }
     core.info(`--- Generate Summary ---`);
     core.info(`  Generated/updated: ${generatedCount} file(s)`);
-    core.setOutput('generated-count', generatedCount);
-    // Auto-commit if requested and there are changes
+    // With commit-changes, a file counts only once it reached the repository
     if (inputs.commitChanges && generatedCount > 0) {
         await autoCommit(workspace, generatedFiles);
     }
+    core.setOutput('generated-count', generatedCount);
 }
 /**
- * Auto-commit generated files to the repository.
+ * Auto-commit generated files to the repository. Throws when the commit or
+ * the push fails, so the job fails instead of dropping the changes.
  */
 async function autoCommit(workspace, files) {
     core.info('Auto-committing generated files...');
@@ -638,8 +653,7 @@ async function autoCommit(workspace, files) {
     }
     catch (error) {
         const msg = error instanceof Error ? error.message : String(error);
-        core.error(`Auto-commit failed: ${msg}`);
-        core.warning('Could not auto-commit. Ensure the workflow has write permissions (contents: write).');
+        throw new Error(`Auto-commit failed: ${msg}\nEnsure the workflow has write permissions (contents: write) and may push to this branch.`);
     }
 }
 //# sourceMappingURL=generate.js.map
@@ -900,7 +914,7 @@ async function runValidate(_client, inputs, workspace) {
     }
     // Post PR comment
     const commentBody = (0, comment_1.formatValidationComment)(results, allPassed);
-    await (0, comment_1.upsertPrComment)(commentBody, inputs.githubToken);
+    await (0, comment_1.upsertPrComment)('validate', commentBody, inputs.githubToken);
     // Set outputs
     core.setOutput('validation-passed', allPassed);
     if (!allPassed) {
@@ -1074,12 +1088,21 @@ exports.formatValidationComment = formatValidationComment;
 exports.formatDiffComment = formatDiffComment;
 const core = __importStar(__nccwpck_require__(7484));
 const github = __importStar(__nccwpck_require__(3228));
-const COMMENT_MARKER = '<!-- lynxprompt-action -->';
+/** Older releases gave both modes this marker; their titles tell them apart. */
+const LEGACY_MARKER = '<!-- lynxprompt-action -->';
+const LEGACY_TITLE = {
+    diff: 'LynxPrompt Diff:',
+    validate: 'LynxPrompt Validation:',
+};
+function marker(mode) {
+    return `<!-- lynxprompt-action:${mode} -->`;
+}
 /**
- * Create or update a PR comment with the given body.
- * Uses a hidden marker to find and update existing comments.
+ * Create or update this mode's PR comment with the given body.
+ * Uses a hidden marker per mode, so a validate run and a diff run on the
+ * same PR each keep their own comment.
  */
-async function upsertPrComment(body, token = process.env.GITHUB_TOKEN) {
+async function upsertPrComment(mode, body, token = process.env.GITHUB_TOKEN) {
     if (!token) {
         core.warning('No GitHub token, so no PR comment. The github-token input defaults to the workflow token; set it if your workflow overrides it with an empty value.');
         return;
@@ -1092,14 +1115,19 @@ async function upsertPrComment(body, token = process.env.GITHUB_TOKEN) {
     const octokit = github.getOctokit(token);
     const prNumber = context.payload.pull_request.number;
     const repo = context.repo;
-    const fullBody = `${COMMENT_MARKER}\n${body}`;
+    const fullBody = `${marker(mode)}\n${body}`;
     // Search for an existing comment from this action
     const { data: comments } = await octokit.rest.issues.listComments({
         ...repo,
         issue_number: prNumber,
         per_page: 100,
     });
-    const existing = comments.find((c) => c.body && c.body.includes(COMMENT_MARKER));
+    const existing = comments.find((c) => c.body?.includes(marker(mode))) ??
+        comments.find((c) => {
+            // The report heading is the line right after the legacy marker
+            const [first, heading] = c.body?.split('\n', 2) ?? [];
+            return first === LEGACY_MARKER && !!heading?.includes(LEGACY_TITLE[mode]);
+        });
     if (existing) {
         core.debug(`Updating existing comment ${existing.id}`);
         await octokit.rest.issues.updateComment({
@@ -1483,6 +1511,8 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.normalizeRemote = normalizeRemote;
+exports.repositoryRoots = repositoryRoots;
 exports.repositoryRoot = repositoryRoot;
 exports.findRepoHierarchy = findRepoHierarchy;
 exports.listRepoBlueprints = listRepoBlueprints;
@@ -1490,13 +1520,48 @@ const fs = __importStar(__nccwpck_require__(9896));
 const path = __importStar(__nccwpck_require__(6928));
 const crypto_1 = __nccwpck_require__(6982);
 /**
- * Identifier of this repository on LynxPrompt, computed the way the CLI does
- * (createRepositoryRoot in cli/src/commands/push.ts): the first 16 hex chars
- * of the SHA-256 of the first remote URL in .git/config. actions/checkout
- * writes `https://github.com/<owner>/<repo>` there, so without a checkout the
- * same URL is built from the runner's environment.
+ * The canonical form of a git remote, so an SSH clone, an https clone and a
+ * `.git` suffix name the same repository. The CLI (cli/src/utils/repo-identity.ts),
+ * this action and the VS Code extension apply the same rules and pin the same
+ * vectors:
+ * - trim, drop trailing `/`, drop a trailing `.git` (any case)
+ * - scp style [user@]host:owner/repo -> https://host/owner/repo
+ * - ssh://, git://, git+ssh://, http(s):// -> https://host/path, without
+ *   credentials or port
+ * - lowercase the host only; the path keeps its case
+ * Anything else (a local path, file://) is returned trimmed and stripped only.
  */
-function repositoryRoot(workspace) {
+function normalizeRemote(remote) {
+    const trimmed = remote.trim().replace(/\/+$/, '').replace(/\.git$/i, '');
+    const url = trimmed.match(/^(?:https?|ssh|git|git\+ssh|ssh\+git):\/\/([^/]*)(.*)$/i);
+    if (url) {
+        const authority = url[1];
+        const hostPort = authority.slice(authority.lastIndexOf('@') + 1);
+        const host = hostPort.startsWith('[')
+            ? hostPort.slice(0, hostPort.indexOf(']') + 1)
+            : hostPort.replace(/:\d*$/, '');
+        return `https://${host.toLowerCase()}/${url[2].replace(/^\/+/, '')}`;
+    }
+    // scp style: [user@]host:path, with no "://" and no slash before the colon
+    const scp = trimmed.match(/^(?:[^@/]+@)?([^:/]+):(?!\/\/)(.+)$/);
+    if (scp) {
+        return `https://${scp[1].toLowerCase()}/${scp[2].replace(/^\/+/, '')}`;
+    }
+    return trimmed;
+}
+function hashRoot(value) {
+    return (0, crypto_1.createHash)('sha256').update(value).digest('hex').slice(0, 16);
+}
+/**
+ * Identifiers of this repository on LynxPrompt, computed the way the CLI does
+ * (cli/src/commands/push.ts): the first 16 hex chars of the SHA-256 of the
+ * normalised first remote URL in .git/config. `legacy` hashes the raw URL, as
+ * every client did before normalisation, so hierarchies created then are
+ * still found. actions/checkout writes `https://github.com/<owner>/<repo>`
+ * there, so without a checkout the same URL is built from the runner's
+ * environment.
+ */
+function repositoryRoots(workspace) {
     let url;
     try {
         const config = fs.readFileSync(path.join(workspace, '.git', 'config'), 'utf-8');
@@ -1509,10 +1574,15 @@ function repositoryRoot(workspace) {
         const server = process.env.GITHUB_SERVER_URL || 'https://github.com';
         url = `${server}/${process.env.GITHUB_REPOSITORY}`;
     }
-    return (0, crypto_1.createHash)('sha256')
-        .update(url ?? path.resolve(workspace))
-        .digest('hex')
-        .slice(0, 16);
+    if (!url) {
+        const root = hashRoot(path.resolve(workspace));
+        return { root, legacy: root };
+    }
+    return { root: hashRoot(normalizeRemote(url)), legacy: hashRoot(url) };
+}
+/** The identifier new hierarchies of this repository are created with. */
+function repositoryRoot(workspace) {
+    return repositoryRoots(workspace).root;
 }
 function hierarchyName(workspace) {
     return process.env.GITHUB_REPOSITORY || path.basename(path.resolve(workspace));
@@ -1523,12 +1593,13 @@ function hierarchyName(workspace) {
  * synced (diff, generate), so no blueprint belongs to it.
  */
 async function findRepoHierarchy(client, workspace, create) {
-    const root = repositoryRoot(workspace);
-    if (create) {
-        return client.ensureHierarchy(hierarchyName(workspace), root);
-    }
+    const { root, legacy } = repositoryRoots(workspace);
     const hierarchies = await client.listHierarchies();
-    return hierarchies.find((h) => h.repository_root === root);
+    const existing = hierarchies.find((h) => h.repository_root === root) ??
+        hierarchies.find((h) => h.repository_root === legacy);
+    if (existing || !create)
+        return existing;
+    return client.ensureHierarchy(hierarchyName(workspace), root);
 }
 /**
  * The blueprints that belong to this repository: those in its hierarchy

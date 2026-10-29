@@ -116,16 +116,17 @@ export async function runGenerate(
   core.info(`--- Generate Summary ---`);
   core.info(`  Generated/updated: ${generatedCount} file(s)`);
 
-  core.setOutput('generated-count', generatedCount);
-
-  // Auto-commit if requested and there are changes
+  // With commit-changes, a file counts only once it reached the repository
   if (inputs.commitChanges && generatedCount > 0) {
     await autoCommit(workspace, generatedFiles);
   }
+
+  core.setOutput('generated-count', generatedCount);
 }
 
 /**
- * Auto-commit generated files to the repository.
+ * Auto-commit generated files to the repository. Throws when the commit or
+ * the push fails, so the job fails instead of dropping the changes.
  */
 async function autoCommit(
   workspace: string,
@@ -163,9 +164,8 @@ async function autoCommit(
     core.info('Changes committed and pushed successfully.');
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
-    core.error(`Auto-commit failed: ${msg}`);
-    core.warning(
-      'Could not auto-commit. Ensure the workflow has write permissions (contents: write).',
+    throw new Error(
+      `Auto-commit failed: ${msg}\nEnsure the workflow has write permissions (contents: write) and may push to this branch.`,
     );
   }
 }
