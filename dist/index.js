@@ -508,6 +508,7 @@ exports.resolveInWorkspace = resolveInWorkspace;
 exports.runGenerate = runGenerate;
 const core = __importStar(__nccwpck_require__(7484));
 const fs = __importStar(__nccwpck_require__(1943));
+const fs_1 = __nccwpck_require__(9896);
 const path = __importStar(__nccwpck_require__(6928));
 const repo_1 = __nccwpck_require__(3012);
 const child_process_1 = __nccwpck_require__(5317);
@@ -519,7 +520,8 @@ function git(args, cwd) {
 }
 /**
  * The absolute path for a blueprint's repository_path, or undefined when it
- * would land outside the workspace or inside .git.
+ * would land outside the workspace, inside .git (in any case, for
+ * case-insensitive file systems), or go through a symlink in the checkout.
  */
 function resolveInWorkspace(workspace, repositoryPath) {
     const root = path.resolve(workspace);
@@ -527,8 +529,20 @@ function resolveInWorkspace(workspace, repositoryPath) {
     const rel = path.relative(root, full);
     if (!rel || rel.startsWith('..') || path.isAbsolute(rel))
         return undefined;
-    if (rel.split(path.sep)[0] === '.git')
+    const parts = rel.split(path.sep);
+    if (parts[0].toLowerCase() === '.git')
         return undefined;
+    let current = root;
+    for (const part of parts) {
+        current = path.join(current, part);
+        try {
+            if ((0, fs_1.lstatSync)(current).isSymbolicLink())
+                return undefined;
+        }
+        catch {
+            break; // Does not exist yet, so neither does anything below it
+        }
+    }
     return full;
 }
 /**
@@ -729,7 +743,14 @@ async function syncFile(client, file, inputs, hierarchy, existingBlueprints) {
     // The blueprint of this file is the one at the same path in this repository
     const existing = existingBlueprints.find((b) => b.repository_path === file.blueprintName);
     if (existing) {
-        if ((0, checksum_1.contentChecksum)(file.content) === existing.content_checksum) {
+        // A visibility the workflow sets is applied even when the content is
+        // unchanged. The list does not say which team a blueprint is shared
+        // with, so TEAM with a team-id is always sent.
+        const metaChanged = !!inputs.visibility &&
+            (inputs.visibility !== existing.visibility ||
+                (inputs.visibility === 'TEAM' && !!inputs.teamId));
+        const contentChanged = (0, checksum_1.contentChecksum)(file.content) !== existing.content_checksum;
+        if (!contentChanged && !metaChanged) {
             core.info(`Unchanged: ${file.relativePath} (checksum match)`);
             return {
                 file: file.relativePath,
@@ -741,7 +762,7 @@ async function syncFile(client, file, inputs, hierarchy, existingBlueprints) {
         // Visibility changes only when the workflow sets it, so a blueprint
         // published or shared from the web stays that way
         const updated = await client.updateBlueprint(existing.id, {
-            content: file.content,
+            ...(contentChanged ? { content: file.content } : {}),
             expected_checksum: existing.content_checksum,
             ...(inputs.visibility ? { visibility: inputs.visibility } : {}),
             ...(inputs.teamId ? { team_id: inputs.teamId } : {}),

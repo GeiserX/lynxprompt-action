@@ -1,5 +1,6 @@
 import * as core from '@actions/core';
 import * as fs from 'fs/promises';
+import { lstatSync } from 'fs';
 import * as path from 'path';
 import { LynxPromptClient } from '../api';
 import { ActionInputs } from '../types';
@@ -16,7 +17,8 @@ function git(args: string[], cwd: string) {
 
 /**
  * The absolute path for a blueprint's repository_path, or undefined when it
- * would land outside the workspace or inside .git.
+ * would land outside the workspace, inside .git (in any case, for
+ * case-insensitive file systems), or go through a symlink in the checkout.
  */
 export function resolveInWorkspace(
   workspace: string,
@@ -26,7 +28,17 @@ export function resolveInWorkspace(
   const full = path.resolve(root, repositoryPath);
   const rel = path.relative(root, full);
   if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) return undefined;
-  if (rel.split(path.sep)[0] === '.git') return undefined;
+  const parts = rel.split(path.sep);
+  if (parts[0].toLowerCase() === '.git') return undefined;
+  let current = root;
+  for (const part of parts) {
+    current = path.join(current, part);
+    try {
+      if (lstatSync(current).isSymbolicLink()) return undefined;
+    } catch {
+      break; // Does not exist yet, so neither does anything below it
+    }
+  }
   return full;
 }
 

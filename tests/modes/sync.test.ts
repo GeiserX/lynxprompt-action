@@ -126,6 +126,40 @@ describe('runSync', () => {
     });
   });
 
+  it('applies an explicit visibility to an unchanged file without resending content', async () => {
+    const ws = makeWorkspace({ 'AGENTS.md': AGENTS });
+    const h = server.addHierarchy('owner/repo', rootOf(ws));
+    const bp = server.addBlueprint({ name: 'AGENTS.md', content: AGENTS, hierarchyId: h.id, repositoryPath: 'AGENTS.md' });
+
+    await runSync(client, inputs({ visibility: 'PUBLIC' }), ws);
+
+    expect(server.calls.find((c) => c.method === 'PUT')!.body).toEqual({
+      expected_checksum: contentChecksum(AGENTS),
+      visibility: 'PUBLIC',
+    });
+    expect(bp.visibility).toBe('PUBLIC');
+  });
+
+  it('sends nothing for an unchanged file whose visibility already matches', async () => {
+    const ws = makeWorkspace({ 'AGENTS.md': AGENTS });
+    const h = server.addHierarchy('owner/repo', rootOf(ws));
+    server.addBlueprint({ name: 'AGENTS.md', content: AGENTS, visibility: 'PUBLIC', hierarchyId: h.id, repositoryPath: 'AGENTS.md' });
+
+    await runSync(client, inputs({ visibility: 'PUBLIC' }), ws);
+
+    expect(server.calls.filter((c) => c.method === 'PUT')).toEqual([]);
+  });
+
+  it('re-sends TEAM with team-id for an unchanged file, since the list has no team', async () => {
+    const ws = makeWorkspace({ 'AGENTS.md': AGENTS });
+    const h = server.addHierarchy('owner/repo', rootOf(ws));
+    const bp = server.addBlueprint({ name: 'AGENTS.md', content: AGENTS, visibility: 'TEAM', teamId: 'team_1', hierarchyId: h.id, repositoryPath: 'AGENTS.md' });
+
+    await runSync(client, inputs({ visibility: 'TEAM', teamId: 'team_2' }), ws);
+
+    expect(bp.teamId).toBe('team_2');
+  });
+
   it('sends team-id on create so a user in several teams can sync TEAM blueprints', async () => {
     server.teamCount = 2;
     const ws = makeWorkspace({ 'AGENTS.md': AGENTS });

@@ -94,7 +94,17 @@ async function syncFile(
   );
 
   if (existing) {
-    if (contentChecksum(file.content) === existing.content_checksum) {
+    // A visibility the workflow sets is applied even when the content is
+    // unchanged. The list does not say which team a blueprint is shared
+    // with, so TEAM with a team-id is always sent.
+    const metaChanged =
+      !!inputs.visibility &&
+      (inputs.visibility !== existing.visibility ||
+        (inputs.visibility === 'TEAM' && !!inputs.teamId));
+    const contentChanged =
+      contentChecksum(file.content) !== existing.content_checksum;
+
+    if (!contentChanged && !metaChanged) {
       core.info(`Unchanged: ${file.relativePath} (checksum match)`);
       return {
         file: file.relativePath,
@@ -107,7 +117,7 @@ async function syncFile(
     // Visibility changes only when the workflow sets it, so a blueprint
     // published or shared from the web stays that way
     const updated = await client.updateBlueprint(existing.id, {
-      content: file.content,
+      ...(contentChanged ? { content: file.content } : {}),
       expected_checksum: existing.content_checksum,
       ...(inputs.visibility ? { visibility: inputs.visibility } : {}),
       ...(inputs.teamId ? { team_id: inputs.teamId } : {}),

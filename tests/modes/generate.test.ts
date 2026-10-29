@@ -117,6 +117,20 @@ describe('runGenerate', () => {
     expect(resolveInWorkspace('/w', '/etc/passwd')).toBeUndefined();
     expect(resolveInWorkspace('/w', '.git/config')).toBeUndefined();
     expect(resolveInWorkspace('/w', '.')).toBeUndefined();
+    expect(resolveInWorkspace('/w', '.GIT/hooks/pre-commit')).toBeUndefined();
+  });
+
+  it('refuses a path through a symlink in the checkout', async () => {
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'lp-outside-'));
+    const ws = makeWorkspace({});
+    fs.symlinkSync(outside, path.join(ws, 'docs'));
+    const h = server.addHierarchy('owner/repo', rootOf(ws));
+    server.addBlueprint({ name: 'docs/AGENTS.md', content: '# Through a link\n', hierarchyId: h.id, repositoryPath: 'docs/AGENTS.md' });
+
+    await runGenerate(client, inputs({ mode: 'generate' }), ws);
+
+    expect(fs.existsSync(path.join(outside, 'AGENTS.md'))).toBe(false);
+    expect(core.setOutput).toHaveBeenCalledWith('generated-count', 0);
   });
 
   describe('auto-commit (real git)', () => {
