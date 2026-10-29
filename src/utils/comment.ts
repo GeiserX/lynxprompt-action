@@ -54,11 +54,11 @@ export async function upsertPrComment(
 
   const existing =
     comments.find((c) => c.body?.includes(marker(mode))) ??
-    comments.find(
-      (c) =>
-        c.body?.startsWith(LEGACY_MARKER) &&
-        c.body.includes(LEGACY_TITLE[mode]),
-    );
+    comments.find((c) => {
+      // The report heading is the line right after the legacy marker
+      const [first, heading] = c.body?.split('\n', 2) ?? [];
+      return first === LEGACY_MARKER && !!heading?.includes(LEGACY_TITLE[mode]);
+    });
 
   if (existing) {
     core.debug(`Updating existing comment ${existing.id}`);

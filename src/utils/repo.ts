@@ -6,20 +6,36 @@ import { BlueprintListItem, Hierarchy } from '../types';
 
 /**
  * The canonical form of a git remote, so an SSH clone, an https clone and a
- * `.git` suffix name the same repository: `https://host/owner/repo`, with no
- * credentials, no port and a lowercase host. The CLI, this action and the
- * VS Code extension all compute it the same way. Anything that is not a
- * recognised remote (a local path) is returned trimmed of the trailing `/`
- * and `.git` only.
+ * `.git` suffix name the same repository. The CLI (cli/src/utils/repo-identity.ts),
+ * this action and the VS Code extension apply the same rules and pin the same
+ * vectors:
+ * - trim, drop trailing `/`, drop a trailing `.git` (any case)
+ * - scp style [user@]host:owner/repo -> https://host/owner/repo
+ * - ssh://, git://, git+ssh://, http(s):// -> https://host/path, without
+ *   credentials or port
+ * - lowercase the host only; the path keeps its case
+ * Anything else (a local path, file://) is returned trimmed and stripped only.
  */
 export function normalizeRemote(remote: string): string {
-  let url = remote.trim().replace(/\/+$/, '').replace(/\.git$/i, '');
-  // scp style: user@host:owner/repo
-  const scp = url.match(/^[^@/\s]+@([^:/\s]+):(?!\/)(.+)$/);
-  if (scp) url = `https://${scp[1]}/${scp[2]}`;
-  const parsed = url.match(/^(?:https?|ssh|git):\/\/(?:[^/]*@)?([^/:]+)(?::\d*)?(\/.*)?$/i);
-  if (!parsed) return url;
-  return `https://${parsed[1].toLowerCase()}${parsed[2] ?? ''}`;
+  const trimmed = remote.trim().replace(/\/+$/, '').replace(/\.git$/i, '');
+
+  const url = trimmed.match(/^(?:https?|ssh|git|git\+ssh|ssh\+git):\/\/([^/]*)(.*)$/i);
+  if (url) {
+    const authority = url[1];
+    const hostPort = authority.slice(authority.lastIndexOf('@') + 1);
+    const host = hostPort.startsWith('[')
+      ? hostPort.slice(0, hostPort.indexOf(']') + 1)
+      : hostPort.replace(/:\d*$/, '');
+    return `https://${host.toLowerCase()}/${url[2].replace(/^\/+/, '')}`;
+  }
+
+  // scp style: [user@]host:path, with no "://" and no slash before the colon
+  const scp = trimmed.match(/^(?:[^@/]+@)?([^:/]+):(?!\/\/)(.+)$/);
+  if (scp) {
+    return `https://${scp[1].toLowerCase()}/${scp[2].replace(/^\/+/, '')}`;
+  }
+
+  return trimmed;
 }
 
 function hashRoot(value: string): string {

@@ -225,5 +225,16 @@ describe('upsertPrComment', () => {
       expect(issues.updateComment.mock.calls.map((c) => c[0].comment_id)).toEqual([102, 101]);
       expect(issues.createComment).not.toHaveBeenCalled();
     });
+
+    it('reads the legacy mode from the heading, not from a file name in the table', async () => {
+      const issues = octokitWith([
+        { id: 101, body: '<!-- lynxprompt-action -->\n## :warning: LynxPrompt Diff: drift\n| `LynxPrompt Validation: notes.md` |' },
+      ]);
+
+      await upsertPrComment('validate', 'new validation', 'ghs_x');
+
+      expect(issues.updateComment).not.toHaveBeenCalled();
+      expect(issues.createComment).toHaveBeenCalled();
+    });
   });
 });

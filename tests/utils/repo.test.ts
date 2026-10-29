@@ -13,6 +13,10 @@ const SAME_REPO = [
   'https://github.com/GeiserX/LynxPrompt.git/',
   'ssh://git@github.com:22/GeiserX/LynxPrompt.git',
   'https://x-access-token:abc@GitHub.com/GeiserX/LynxPrompt',
+  '  git@GITHUB.COM:GeiserX/LynxPrompt.GIT  ',
+  'git://github.com/GeiserX/LynxPrompt.git',
+  'http://github.com:8080/GeiserX/LynxPrompt',
+  'github.com:GeiserX/LynxPrompt',
 ];
 const CANONICAL = 'https://github.com/GeiserX/LynxPrompt';
 const CANONICAL_ROOT = 'eb2e56c7498b9899';
@@ -32,12 +36,16 @@ describe('normalizeRemote', () => {
     expect(normalizeRemote(remote)).toBe(CANONICAL);
   });
 
-  it('maps git:// and keeps the path case', () => {
-    expect(normalizeRemote('git://Example.ORG/Team/Repo.GIT')).toBe('https://example.org/Team/Repo');
+  it("keeps the path's case", () => {
+    expect(normalizeRemote('git@github.com:geiserx/lynxprompt.git')).toBe('https://github.com/geiserx/lynxprompt');
   });
 
   it('leaves a local path alone apart from the suffix', () => {
-    expect(normalizeRemote(' /srv/git/repo.git/ ')).toBe('/srv/git/repo');
+    expect(normalizeRemote('/srv/git/Repo.git/')).toBe('/srv/git/Repo');
+  });
+
+  it('drops the port of a bracketed IPv6 host', () => {
+    expect(normalizeRemote('ssh://git@[::1]:2222/o/r.git')).toBe('https://[::1]/o/r');
   });
 });
 
