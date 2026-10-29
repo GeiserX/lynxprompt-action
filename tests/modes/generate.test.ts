@@ -187,15 +187,16 @@ describe('runGenerate', () => {
       expect(log.trim()).toBe('init');
     });
 
-    it('reports a failed push without throwing', async () => {
+    it('fails on a failed push and reports no generated files', async () => {
       const { ws } = gitRepo();
       execFileSync('git', ['remote', 'set-url', 'origin', path.join(ws, 'missing')], { cwd: ws });
       const h = server.addHierarchy('owner/repo', rootOf(ws));
       server.addBlueprint({ name: 'AGENTS.md', content: AGENTS, hierarchyId: h.id, repositoryPath: 'AGENTS.md' });
 
-      await runGenerate(client, inputs({ mode: 'generate', commitChanges: true }), ws);
-
-      expect(core.error).toHaveBeenCalledWith(expect.stringContaining('Auto-commit failed'));
+      await expect(
+        runGenerate(client, inputs({ mode: 'generate', commitChanges: true }), ws),
+      ).rejects.toThrow(/Auto-commit failed/);
+      expect(core.setOutput).not.toHaveBeenCalledWith('generated-count', expect.anything());
     });
   });
 });

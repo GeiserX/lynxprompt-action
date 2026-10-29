@@ -297,7 +297,7 @@ describe('runValidate', () => {
 
     expect(core.setOutput).toHaveBeenCalledWith('validation-passed', true);
     expect(core.setFailed).not.toHaveBeenCalled();
-    expect(upsertPrComment).toHaveBeenCalled();
+    expect(upsertPrComment).toHaveBeenCalledWith('validate', expect.any(String), undefined);
   });
 
   it('fails when a file has validation errors', async () => {

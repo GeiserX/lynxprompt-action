@@ -33,7 +33,7 @@ describe('upsertPrComment', () => {
   it('warns and returns when GITHUB_TOKEN is not set', async () => {
     delete process.env.GITHUB_TOKEN;
 
-    await upsertPrComment('test body');
+    await upsertPrComment('diff', 'test body');
 
     expect(core.warning).toHaveBeenCalledWith(
       expect.stringContaining('No GitHub token'),
@@ -53,7 +53,7 @@ describe('upsertPrComment', () => {
     };
     vi.mocked(github.getOctokit).mockReturnValue(octokit as any);
 
-    await upsertPrComment('test body', 'ghs_input');
+    await upsertPrComment('diff', 'test body', 'ghs_input');
 
     expect(github.getOctokit).toHaveBeenCalledWith('ghs_input');
     expect(octokit.rest.issues.createComment).toHaveBeenCalled();
@@ -63,7 +63,7 @@ describe('upsertPrComment', () => {
     process.env.GITHUB_TOKEN = 'ghp_test123';
     (github.context as any).payload = {};
 
-    await upsertPrComment('test body');
+    await upsertPrComment('diff', 'test body');
 
     expect(core.info).toHaveBeenCalledWith(
       expect.stringContaining('Not a pull request context'),
@@ -87,7 +87,7 @@ describe('upsertPrComment', () => {
       },
     } as any);
 
-    await upsertPrComment('new comment body');
+    await upsertPrComment('diff', 'new comment body');
 
     expect(mockListComments).toHaveBeenCalledWith({
       owner: 'test-owner',
@@ -113,7 +113,7 @@ describe('upsertPrComment', () => {
     const mockListComments = vi.fn().mockResolvedValue({
       data: [
         { id: 100, body: 'unrelated comment' },
-        { id: 200, body: '<!-- lynxprompt-action -->\nold content' },
+        { id: 200, body: '<!-- lynxprompt-action:diff -->\nold content' },
       ],
     });
     vi.mocked(github.getOctokit).mockReturnValue({
@@ -126,7 +126,7 @@ describe('upsertPrComment', () => {
       },
     } as any);
 
-    await upsertPrComment('updated body');
+    await upsertPrComment('diff', 'updated body');
 
     expect(mockUpdateComment).toHaveBeenCalledWith({
       owner: 'test-owner',
@@ -153,10 +153,10 @@ describe('upsertPrComment', () => {
       },
     } as any);
 
-    await upsertPrComment('body text');
+    await upsertPrComment('diff', 'body text');
 
     const calledBody = mockCreateComment.mock.calls[0][0].body;
-    expect(calledBody).toContain('<!-- lynxprompt-action -->');
+    expect(calledBody).toContain('<!-- lynxprompt-action:diff -->');
     expect(calledBody).toContain('body text');
   });
 
@@ -181,9 +181,49 @@ describe('upsertPrComment', () => {
       },
     } as any);
 
-    await upsertPrComment('new');
+    await upsertPrComment('diff', 'new');
 
     // Should create new since no existing marker found
     expect(mockCreateComment).toHaveBeenCalled();
+  });
+  describe('one comment per mode', () => {
+    function octokitWith(data: { id: number; body: string }[]) {
+      const issues = {
+        listComments: vi.fn().mockResolvedValue({ data }),
+        createComment: vi.fn().mockResolvedValue({}),
+        updateComment: vi.fn().mockResolvedValue({}),
+      };
+      vi.mocked(github.getOctokit).mockReturnValue({ rest: { issues } } as any);
+      return issues;
+    }
+
+    beforeEach(() => {
+      (github.context as any).payload = { pull_request: { number: 7 } };
+      (github.context as any).repo = { owner: 'o', repo: 'r' };
+    });
+
+    it('validate leaves the diff report alone and posts its own', async () => {
+      const issues = octokitWith([
+        { id: 101, body: '<!-- lynxprompt-action:diff -->\n## :warning: LynxPrompt Diff: Config drift detected' },
+      ]);
+
+      await upsertPrComment('validate', '## :x: LynxPrompt Validation: issues', 'ghs_x');
+
+      expect(issues.updateComment).not.toHaveBeenCalled();
+      expect(issues.createComment.mock.calls[0][0].body).toMatch(/^<!-- lynxprompt-action:validate -->\n/);
+    });
+
+    it('takes over the comment an older release posted for the same mode', async () => {
+      const issues = octokitWith([
+        { id: 101, body: '<!-- lynxprompt-action -->\n## :warning: LynxPrompt Diff: Config drift detected' },
+        { id: 102, body: '<!-- lynxprompt-action -->\n## :x: LynxPrompt Validation: issues' },
+      ]);
+
+      await upsertPrComment('validate', 'new validation', 'ghs_x');
+      await upsertPrComment('diff', 'new diff', 'ghs_x');
+
+      expect(issues.updateComment.mock.calls.map((c) => c[0].comment_id)).toEqual([102, 101]);
+      expect(issues.createComment).not.toHaveBeenCalled();
+    });
   });
 });

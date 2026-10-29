@@ -2,13 +2,27 @@ import * as core from '@actions/core';
 import * as github from '@actions/github';
 import { ValidationResult, DiffResult } from '../types';
 
-const COMMENT_MARKER = '<!-- lynxprompt-action -->';
+/** The modes that post a PR comment, each to its own comment. */
+export type CommentMode = 'diff' | 'validate';
+
+/** Older releases gave both modes this marker; their titles tell them apart. */
+const LEGACY_MARKER = '<!-- lynxprompt-action -->';
+const LEGACY_TITLE: Record<CommentMode, string> = {
+  diff: 'LynxPrompt Diff:',
+  validate: 'LynxPrompt Validation:',
+};
+
+function marker(mode: CommentMode): string {
+  return `<!-- lynxprompt-action:${mode} -->`;
+}
 
 /**
- * Create or update a PR comment with the given body.
- * Uses a hidden marker to find and update existing comments.
+ * Create or update this mode's PR comment with the given body.
+ * Uses a hidden marker per mode, so a validate run and a diff run on the
+ * same PR each keep their own comment.
  */
 export async function upsertPrComment(
+  mode: CommentMode,
   body: string,
   token: string | undefined = process.env.GITHUB_TOKEN,
 ): Promise<void> {
@@ -29,7 +43,7 @@ export async function upsertPrComment(
   const prNumber = context.payload.pull_request.number;
   const repo = context.repo;
 
-  const fullBody = `${COMMENT_MARKER}\n${body}`;
+  const fullBody = `${marker(mode)}\n${body}`;
 
   // Search for an existing comment from this action
   const { data: comments } = await octokit.rest.issues.listComments({
@@ -38,9 +52,13 @@ export async function upsertPrComment(
     per_page: 100,
   });
 
-  const existing = comments.find(
-    (c) => c.body && c.body.includes(COMMENT_MARKER),
-  );
+  const existing =
+    comments.find((c) => c.body?.includes(marker(mode))) ??
+    comments.find(
+      (c) =>
+        c.body?.startsWith(LEGACY_MARKER) &&
+        c.body.includes(LEGACY_TITLE[mode]),
+    );
 
   if (existing) {
     core.debug(`Updating existing comment ${existing.id}`);

@@ -68,14 +68,14 @@ describe('runSync', () => {
     expect(core.setFailed).not.toHaveBeenCalled();
   });
 
-  it('a second sync of unchanged files sends no write but the hierarchy lookup', async () => {
+  it('a second sync of unchanged files sends no write', async () => {
     const ws = makeWorkspace({ 'AGENTS.md': AGENTS, 'CLAUDE.md': CLAUDE });
     await runSync(client, inputs(), ws);
     server.calls = [];
 
     await runSync(client, inputs(), ws);
 
-    expect(server.writes().map((c) => c.path)).toEqual(['/api/v1/hierarchies']);
+    expect(server.writes()).toEqual([]);
     expect(server.blueprints).toHaveLength(2);
     expect(core.setOutput).toHaveBeenLastCalledWith('synced-count', 0);
   });

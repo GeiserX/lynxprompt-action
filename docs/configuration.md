@@ -33,7 +33,7 @@ Braces such as `**/{AGENTS,CLAUDE}.md` are expanded by the action, and the comma
 |--------|-------------|------|
 | `synced-count` | Number of blueprints created or updated | sync |
 | `validation-passed` | Whether all validations passed (`true`/`false`) | validate |
-| `generated-count` | Number of files generated or updated | generate |
+| `generated-count` | Number of files generated or updated (with `commit-changes`, set only after the push succeeds) | generate |
 | `drift-detected` | Whether any drift was detected (`true`/`false`) | diff |
 
 ## Supported platforms

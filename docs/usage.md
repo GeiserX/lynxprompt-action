@@ -82,7 +82,7 @@ jobs:
 
 ## Generate Configs from LynxPrompt on Schedule
 
-Pull this repository's blueprints from LynxPrompt and write each one back to the path it was synced from. Auto-commit the changes. Blueprints of other repositories, and blueprints that were never synced from a repository, are left alone.
+Pull this repository's blueprints from LynxPrompt and write each one back to the path it was synced from. Auto-commit the changes; if the commit or the push fails (no `contents: write`, a protected branch), the job fails. Blueprints of other repositories, and blueprints that were never synced from a repository, are left alone.
 
 ```yaml
 name: Generate AI Configs
@@ -146,7 +146,7 @@ my-monorepo/
       .cursor/rules/frontend.mdc
 ```
 
-Each file is synced as a separate blueprint with its full relative path as the name (e.g., `packages/api/AGENTS.md`). The blueprints of one repository are grouped in a LynxPrompt hierarchy, the same one `lynxp push` uses for that repository, and each one records its file path, so sync updates the right blueprint and generate writes it back to the right file.
+Each file is synced as a separate blueprint with its full relative path as the name (e.g., `packages/api/AGENTS.md`). The blueprints of one repository are grouped in a LynxPrompt hierarchy, the same one `lynxp push` uses for that repository whether it was cloned over SSH or https, and each one records its file path, so sync updates the right blueprint and generate writes it back to the right file.
 
 ## Custom File Patterns
 

@@ -15,6 +15,16 @@ interface Page {
   has_more: boolean;
 }
 
+/** An HTTP error answer from the API, with its status. */
+export class ApiError extends Error {
+  constructor(
+    readonly status: number,
+    message: string,
+  ) {
+    super(message);
+  }
+}
+
 export class LynxPromptClient {
   private readonly baseUrl: string;
   private readonly token: string;
@@ -48,7 +58,8 @@ export class LynxPromptClient {
 
     if (!response.ok) {
       const text = await response.text();
-      throw new Error(
+      throw new ApiError(
+        response.status,
         `LynxPrompt API error: ${response.status} ${response.statusText} - ${text}`,
       );
     }
@@ -160,14 +171,19 @@ export class LynxPromptClient {
   }
 
   /**
-   * Validate that the token is valid by making a list request.
+   * Validate that the token is valid by making a list request. False only
+   * when the server rejects the token (401, 403); an outage, a network error
+   * or a URL that is not the API throws with its own message.
    */
   async validateToken(): Promise<boolean> {
     try {
       await this.request('GET', '/api/v1/blueprints?limit=1');
       return true;
-    } catch {
-      return false;
+    } catch (error) {
+      if (error instanceof ApiError && (error.status === 401 || error.status === 403)) {
+        return false;
+      }
+      throw error;
     }
   }
 }
