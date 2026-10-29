@@ -36,7 +36,7 @@ describe('runSync', () => {
   const baseInputs: ActionInputs = {
     mode: 'sync',
     token: 'lp_test',
-    apiUrl: 'https://lynxprompt.com',
+    apiUrl: 'https://lynxprompt.geiser.cloud',
     files: '**/{AGENTS,CLAUDE}.md',
     visibility: 'PRIVATE',
     platforms: [],

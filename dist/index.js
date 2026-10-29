@@ -174,6 +174,7 @@ const sync_1 = __nccwpck_require__(8392);
 const validate_1 = __nccwpck_require__(8905);
 const generate_1 = __nccwpck_require__(8844);
 const diff_1 = __nccwpck_require__(2524);
+const apiUrl_1 = __nccwpck_require__(3910);
 /**
  * Parse and validate action inputs.
  */
@@ -187,7 +188,7 @@ function getInputs() {
     if (!token.startsWith('lp_')) {
         core.warning('Token does not start with "lp_". Ensure you are using a valid LynxPrompt API token.');
     }
-    const apiUrl = core.getInput('api-url') || 'https://lynxprompt.com';
+    const apiUrl = (0, apiUrl_1.resolveApiUrl)(core.getInput('api-url'));
     const files = core.getInput('files') ||
         '**/{AGENTS,CLAUDE,AIDER}.md,**/.github/copilot-instructions.md,**/.windsurfrules,**/.cursor/rules/**/*.mdc';
     const visibility = (core.getInput('visibility') ||
@@ -545,7 +546,7 @@ async function autoCommit(workspace, files) {
         await execAsync('git config user.name "LynxPrompt Action"', {
             cwd: workspace,
         });
-        await execAsync('git config user.email "action@lynxprompt.com"', { cwd: workspace });
+        await execAsync('git config user.email "lynxprompt@geiser.cloud"', { cwd: workspace });
         // Stage the files
         for (const file of files) {
             await execAsync(`git add "${file}"`, { cwd: workspace });
@@ -899,6 +900,33 @@ exports.PLATFORM_TYPE_MAP = {
     aider: ['AIDER_MD'],
 };
 //# sourceMappingURL=types.js.map
+
+/***/ }),
+
+/***/ 3910:
+/***/ ((__unused_webpack_module, exports) => {
+
+"use strict";
+
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.DEFAULT_API_URL = void 0;
+exports.resolveApiUrl = resolveApiUrl;
+exports.DEFAULT_API_URL = 'https://lynxprompt.geiser.cloud';
+const LEGACY_API_URLS = ['https://lynxprompt.com', 'https://lynxprompt.com/'];
+/**
+ * Resolve the api-url input. Empty means the official instance. A workflow
+ * that pinned the old official host (https://lynxprompt.com) is moved to the
+ * new one, because that host only proxies the API until it lapses. Any other
+ * URL is a self-hosted instance and is kept as given.
+ */
+function resolveApiUrl(input) {
+    const value = input.trim();
+    if (!value || LEGACY_API_URLS.includes(value)) {
+        return exports.DEFAULT_API_URL;
+    }
+    return value;
+}
+//# sourceMappingURL=apiUrl.js.map
 
 /***/ }),
 

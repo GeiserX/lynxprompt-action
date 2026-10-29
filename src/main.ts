@@ -5,6 +5,7 @@ import { runSync } from './modes/sync';
 import { runValidate } from './modes/validate';
 import { runGenerate } from './modes/generate';
 import { runDiff } from './modes/diff';
+import { resolveApiUrl } from './utils/apiUrl';
 
 /**
  * Parse and validate action inputs.
@@ -25,7 +26,7 @@ function getInputs(): ActionInputs {
     );
   }
 
-  const apiUrl = core.getInput('api-url') || 'https://lynxprompt.com';
+  const apiUrl = resolveApiUrl(core.getInput('api-url'));
   const files =
     core.getInput('files') ||
     '**/{AGENTS,CLAUDE,AIDER}.md,**/.github/copilot-instructions.md,**/.windsurfrules,**/.cursor/rules/**/*.mdc';
