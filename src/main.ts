@@ -6,6 +6,7 @@ import { runValidate } from './modes/validate';
 import { runGenerate } from './modes/generate';
 import { runDiff } from './modes/diff';
 import { resolveApiUrl } from './utils/apiUrl';
+import { DEFAULT_PATTERNS } from './utils/detector';
 
 /**
  * Parse and validate action inputs.
@@ -27,18 +28,18 @@ function getInputs(): ActionInputs {
   }
 
   const apiUrl = resolveApiUrl(core.getInput('api-url'));
-  const files =
-    core.getInput('files') ||
-    '**/{AGENTS,CLAUDE,AIDER}.md,**/.github/copilot-instructions.md,**/.windsurfrules,**/.cursor/rules/**/*.mdc';
+  const files = core.getInput('files') || DEFAULT_PATTERNS.join(',');
 
-  const visibility = (core.getInput('visibility') ||
-    'PRIVATE') as BlueprintVisibility;
+  // Empty means: PRIVATE for new blueprints, unchanged for existing ones
+  const visibility =
+    (core.getInput('visibility').toUpperCase() as BlueprintVisibility) ||
+    undefined;
   const validVisibilities: BlueprintVisibility[] = [
     'PRIVATE',
     'TEAM',
     'PUBLIC',
   ];
-  if (!validVisibilities.includes(visibility)) {
+  if (visibility && !validVisibilities.includes(visibility)) {
     throw new Error(
       `Invalid visibility "${visibility}". Must be one of: ${validVisibilities.join(', ')}`,
     );
@@ -50,6 +51,10 @@ function getInputs(): ActionInputs {
     .map((p) => p.trim())
     .filter((p) => p.length > 0);
 
+  const teamId = core.getInput('team-id') || undefined;
+  const githubToken =
+    core.getInput('github-token') || process.env.GITHUB_TOKEN || undefined;
+
   const failOnDrift = core.getBooleanInput('fail-on-drift');
   const commitChanges = core.getBooleanInput('commit-changes');
 
@@ -59,6 +64,8 @@ function getInputs(): ActionInputs {
     apiUrl,
     files,
     visibility,
+    teamId,
+    githubToken,
     platforms,
     failOnDrift,
     commitChanges,
@@ -72,8 +79,9 @@ async function run(): Promise<void> {
   try {
     const inputs = getInputs();
 
-    // Mask the token in logs
+    // Mask the tokens in logs
     core.setSecret(inputs.token);
+    if (inputs.githubToken) core.setSecret(inputs.githubToken);
 
     core.info(`LynxPrompt Action - Mode: ${inputs.mode}`);
     core.info(`API URL: ${inputs.apiUrl}`);

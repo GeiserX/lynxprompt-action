@@ -8,11 +8,13 @@ const COMMENT_MARKER = '<!-- lynxprompt-action -->';
  * Create or update a PR comment with the given body.
  * Uses a hidden marker to find and update existing comments.
  */
-export async function upsertPrComment(body: string): Promise<void> {
-  const token = process.env.GITHUB_TOKEN;
+export async function upsertPrComment(
+  body: string,
+  token: string | undefined = process.env.GITHUB_TOKEN,
+): Promise<void> {
   if (!token) {
     core.warning(
-      'GITHUB_TOKEN not available. Cannot post PR comment. Set permissions.pull-requests: write in your workflow.',
+      'No GitHub token, so no PR comment. The github-token input defaults to the workflow token; set it if your workflow overrides it with an empty value.',
     );
     return;
   }
@@ -101,18 +103,13 @@ export function formatValidationComment(
  * Format diff results as a Markdown comment body.
  */
 export function formatDiffComment(results: DiffResult[]): string {
-  const hasDrift = results.some((r) => r.status === 'drift');
-  const hasLocalOnly = results.some((r) => r.status === 'local-only');
-  const hasCloudOnly = results.some((r) => r.status === 'cloud-only');
+  // A cloud-only blueprint is listed but is not drift (see runDiff)
+  const hasDrift = results.some(
+    (r) => r.status === 'drift' || r.status === 'local-only',
+  );
 
-  const icon =
-    hasDrift || hasLocalOnly || hasCloudOnly
-      ? ':warning:'
-      : ':white_check_mark:';
-  const title =
-    hasDrift || hasLocalOnly || hasCloudOnly
-      ? 'Config drift detected'
-      : 'Configs are in sync';
+  const icon = hasDrift ? ':warning:' : ':white_check_mark:';
+  const title = hasDrift ? 'Config drift detected' : 'Configs are in sync';
 
   let body = `## ${icon} LynxPrompt Diff: ${title}\n\n`;
 

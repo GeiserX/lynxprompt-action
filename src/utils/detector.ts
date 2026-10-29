@@ -9,7 +9,9 @@ import { mapFileToType, buildBlueprintName } from './mapper';
  * Default glob patterns for AI IDE configuration files.
  */
 export const DEFAULT_PATTERNS = [
-  '**/{AGENTS,CLAUDE,AIDER}.md',
+  '**/AGENTS.md',
+  '**/CLAUDE.md',
+  '**/AIDER.md',
   '**/.github/copilot-instructions.md',
   '**/.windsurfrules',
   '**/.cursor/rules/**/*.mdc',
@@ -31,13 +33,50 @@ const EXCLUDED_DIRS = [
 
 /**
  * Parse the files input string into an array of glob patterns.
- * Supports comma-separated and newline-separated patterns.
+ * Supports comma-separated and newline-separated patterns. A comma inside
+ * braces does not split, and braces are expanded here
+ * (`**\/{AGENTS,CLAUDE}.md` gives `**\/AGENTS.md` and `**\/CLAUDE.md`),
+ * because @actions/glob does not expand them.
  */
 export function parseFilePatterns(input: string): string[] {
-  return input
-    .split(/[,\n]/)
+  const patterns: string[] = [];
+  let current = '';
+  let depth = 0;
+  for (const ch of input) {
+    if (ch === '{') depth++;
+    if (ch === '}' && depth > 0) depth--;
+    if ((ch === ',' && depth === 0) || ch === '\n') {
+      patterns.push(current);
+      current = '';
+      depth = 0;
+    } else {
+      current += ch;
+    }
+  }
+  patterns.push(current);
+  return patterns
     .map((p) => p.trim())
-    .filter((p) => p.length > 0);
+    .filter((p) => p.length > 0)
+    .flatMap(expandBraces);
+}
+
+/** Expand `{a,b}` groups, innermost first: `x{a,b}y` gives `xay`, `xby`. */
+export function expandBraces(pattern: string): string[] {
+  const match = /\{([^{}]*,[^{}]*)\}/.exec(pattern);
+  if (!match) return [pattern];
+  const before = pattern.slice(0, match.index);
+  const after = pattern.slice(match.index + match[0].length);
+  return match[1]
+    .split(',')
+    .flatMap((alt) => expandBraces(`${before}${alt}${after}`));
+}
+
+/** Prefix a relative glob pattern (or `!pattern`) with the workspace. */
+function rootPattern(workspace: string, pattern: string): string {
+  const negate = pattern.startsWith('!');
+  const body = negate ? pattern.slice(1) : pattern;
+  const rooted = path.isAbsolute(body) ? body : path.join(workspace, body);
+  return negate ? `!${rooted}` : rooted;
 }
 
 /**
@@ -49,9 +88,12 @@ export async function detectConfigFiles(
 ): Promise<DetectedFile[]> {
   const detected: DetectedFile[] = [];
 
-  // Build the glob pattern with exclusions
+  // Build the glob pattern with exclusions. @actions/glob resolves relative
+  // patterns against the process cwd, so root them at the workspace.
   const excludePatterns = EXCLUDED_DIRS.map((d) => `!**/${d}/**`);
-  const allPatterns = [...patterns, ...excludePatterns];
+  const allPatterns = [...patterns, ...excludePatterns].map((p) =>
+    rootPattern(workspace, p),
+  );
 
   core.debug(`Glob patterns: ${allPatterns.join(', ')}`);
 

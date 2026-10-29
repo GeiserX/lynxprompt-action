@@ -20,11 +20,17 @@ inputs:
   files:
     description: 'Glob pattern for config files to process'
     required: false
-    default: '**/{AGENTS,CLAUDE,AIDER}.md,**/.github/copilot-instructions.md,**/.windsurfrules,**/.cursor/rules/**/*.mdc'
+    default: '**/AGENTS.md,**/CLAUDE.md,**/AIDER.md,**/.github/copilot-instructions.md,**/.windsurfrules,**/.cursor/rules/**/*.mdc'
   visibility:
-    description: 'Blueprint visibility when syncing (PRIVATE, TEAM, or PUBLIC)'
+    description: 'Blueprint visibility when syncing (PRIVATE, TEAM, or PUBLIC). Unset: new blueprints are PRIVATE and existing ones keep the visibility they have.'
     required: false
-    default: 'PRIVATE'
+  team-id:
+    description: 'Team that TEAM blueprints are shared with (sync mode). Needed only when you belong to more than one team.'
+    required: false
+  github-token:
+    description: 'GitHub token used to post PR comments (validate and diff modes)'
+    required: false
+    default: ${{ github.token }}
   platforms:
     description: 'Required platforms for validate mode (comma-separated, e.g. cursor,claude-code,copilot)'
     required: false
@@ -48,5 +54,5 @@ outputs:
     description: 'Whether drift was detected (diff mode)'
 
 runs:
-  using: 'node20'
+  using: 'node24'
   main: 'dist/index.js'

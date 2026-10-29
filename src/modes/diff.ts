@@ -1,18 +1,21 @@
 import * as core from '@actions/core';
-import * as crypto from 'crypto';
 import { LynxPromptClient } from '../api';
-import { ActionInputs, DiffResult, DetectedFile } from '../types';
+import { ActionInputs, DiffResult } from '../types';
 import { detectConfigFiles, parseFilePatterns } from '../utils/detector';
 import { formatDiffComment, upsertPrComment } from '../utils/comment';
+import { contentChecksum } from '../utils/checksum';
+import { findRepoHierarchy, listRepoBlueprints } from '../utils/repo';
 
 /**
  * Diff mode: compare local AI config files with cloud blueprints.
  *
  * - Detects local config files
- * - Fetches blueprints from LynxPrompt
+ * - Fetches this repository's blueprints from LynxPrompt
  * - Compares checksums to detect drift
  * - Posts a PR comment showing differences
- * - Optionally fails the check if drift is detected
+ * - Optionally fails the check if drift is detected. Drift is a file that
+ *   differs from its blueprint or has none; a blueprint with no local file
+ *   is reported but is not drift, because sync never deletes blueprints.
  */
 export async function runDiff(
   client: LynxPromptClient,
@@ -22,8 +25,9 @@ export async function runDiff(
   const patterns = parseFilePatterns(inputs.files);
   const localFiles = await detectConfigFiles(workspace, patterns);
 
-  // Fetch all blueprints
-  const blueprints = await client.listBlueprints();
+  // Fetch the blueprints of this repository only
+  const hierarchy = await findRepoHierarchy(client, workspace, false);
+  const blueprints = await listRepoBlueprints(client, hierarchy);
 
   const results: DiffResult[] = [];
   const matchedBlueprintIds = new Set<string>();
@@ -31,7 +35,7 @@ export async function runDiff(
   // Compare local files against cloud blueprints
   for (const file of localFiles) {
     const matching = blueprints.find(
-      (b) => b.name === file.blueprintName && b.type === file.type,
+      (b) => b.repository_path === file.blueprintName,
     );
 
     if (!matching) {
@@ -40,7 +44,7 @@ export async function runDiff(
         blueprintName: file.blueprintName,
         type: file.type,
         status: 'local-only',
-        localChecksum: computeChecksum(file.content),
+        localChecksum: contentChecksum(file.content),
         details: 'File exists locally but not in LynxPrompt',
       });
       continue;
@@ -48,7 +52,7 @@ export async function runDiff(
 
     matchedBlueprintIds.add(matching.id);
 
-    const localChecksum = computeChecksum(file.content);
+    const localChecksum = contentChecksum(file.content);
     const cloudChecksum = matching.content_checksum;
 
     if (localChecksum === cloudChecksum) {
@@ -91,7 +95,7 @@ export async function runDiff(
   for (const blueprint of blueprints) {
     if (!matchedBlueprintIds.has(blueprint.id)) {
       results.push({
-        file: `(not found locally)`,
+        file: blueprint.repository_path ?? '(not found locally)',
         blueprintName: blueprint.name,
         type: blueprint.type,
         status: 'cloud-only',
@@ -103,7 +107,7 @@ export async function runDiff(
 
   // Log results
   const driftCount = results.filter(
-    (r) => r.status !== 'match',
+    (r) => r.status === 'drift' || r.status === 'local-only',
   ).length;
   const hasDrift = driftCount > 0;
 
@@ -122,7 +126,7 @@ export async function runDiff(
 
   // Post PR comment
   const commentBody = formatDiffComment(results);
-  await upsertPrComment(commentBody);
+  await upsertPrComment(commentBody, inputs.githubToken);
 
   // Set outputs
   core.setOutput('drift-detected', hasDrift);
@@ -133,11 +137,4 @@ export async function runDiff(
       `Config drift detected: ${driftCount} file(s) differ from cloud blueprints.`,
     );
   }
-}
-
-/**
- * Compute SHA-256 checksum of content.
- */
-function computeChecksum(content: string): string {
-  return crypto.createHash('sha256').update(content, 'utf-8').digest('hex');
 }

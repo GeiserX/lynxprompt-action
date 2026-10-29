@@ -37,3 +37,22 @@ describe('parseFilePatterns', () => {
     expect(result).toEqual(['a.md', 'b.md', 'c.md']);
   });
 });
+
+describe('parseFilePatterns with braces', () => {
+  it('does not split on a comma inside braces, and expands the braces', () => {
+    expect(parseFilePatterns('**/{AGENTS,CLAUDE,AIDER}.md,**/.windsurfrules')).toEqual([
+      '**/AGENTS.md',
+      '**/CLAUDE.md',
+      '**/AIDER.md',
+      '**/.windsurfrules',
+    ]);
+  });
+
+  it('expands several brace groups', () => {
+    expect(parseFilePatterns('{a,b}/{x,y}.md')).toEqual(['a/x.md', 'a/y.md', 'b/x.md', 'b/y.md']);
+  });
+
+  it('keeps a brace with no comma as is', () => {
+    expect(parseFilePatterns('**/{AGENTS}.md')).toEqual(['**/{AGENTS}.md']);
+  });
+});

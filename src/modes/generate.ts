@@ -1,19 +1,52 @@
 import * as core from '@actions/core';
 import * as fs from 'fs/promises';
+import { lstatSync } from 'fs';
 import * as path from 'path';
 import { LynxPromptClient } from '../api';
 import { ActionInputs } from '../types';
-import { typeToDefaultPath } from '../utils/mapper';
-import { exec } from 'child_process';
+import { findRepoHierarchy, listRepoBlueprints } from '../utils/repo';
+import { execFile } from 'child_process';
 import { promisify } from 'util';
 
-const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
+
+/** Run git with an argv, never through a shell. */
+function git(args: string[], cwd: string) {
+  return execFileAsync('git', args, { cwd });
+}
+
+/**
+ * The absolute path for a blueprint's repository_path, or undefined when it
+ * would land outside the workspace, inside .git (in any case, for
+ * case-insensitive file systems), or go through a symlink in the checkout.
+ */
+export function resolveInWorkspace(
+  workspace: string,
+  repositoryPath: string,
+): string | undefined {
+  const root = path.resolve(workspace);
+  const full = path.resolve(root, repositoryPath);
+  const rel = path.relative(root, full);
+  if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) return undefined;
+  const parts = rel.split(path.sep);
+  if (parts[0].toLowerCase() === '.git') return undefined;
+  let current = root;
+  for (const part of parts) {
+    current = path.join(current, part);
+    try {
+      if (lstatSync(current).isSymbolicLink()) return undefined;
+    } catch {
+      break; // Does not exist yet, so neither does anything below it
+    }
+  }
+  return full;
+}
 
 /**
  * Generate mode: pull blueprints from LynxPrompt and write them to the repo.
  *
- * - Fetches all blueprints from LynxPrompt
- * - Writes each blueprint to its default file path
+ * - Fetches this repository's blueprints from LynxPrompt
+ * - Writes each blueprint to the file path it was synced from
  * - Optionally auto-commits the changes
  */
 export async function runGenerate(
@@ -21,10 +54,11 @@ export async function runGenerate(
   inputs: ActionInputs,
   workspace: string,
 ): Promise<void> {
-  const blueprints = await client.listBlueprints();
+  const hierarchy = await findRepoHierarchy(client, workspace, false);
+  const blueprints = await listRepoBlueprints(client, hierarchy);
 
   if (blueprints.length === 0) {
-    core.warning('No blueprints found in LynxPrompt.');
+    core.warning('No blueprints found in LynxPrompt for this repository.');
     core.setOutput('generated-count', 0);
     return;
   }
@@ -36,12 +70,18 @@ export async function runGenerate(
 
   for (const blueprintMeta of blueprints) {
     try {
+      // The file path is the one the blueprint was synced from
+      const filePath = blueprintMeta.repository_path!;
+      const fullPath = resolveInWorkspace(workspace, filePath);
+      if (!fullPath) {
+        core.warning(
+          `Skipping blueprint ${blueprintMeta.name}: path "${filePath}" is outside the repository.`,
+        );
+        continue;
+      }
+
       // Fetch full blueprint with content
       const blueprint = await client.getBlueprint(blueprintMeta.id);
-
-      // Determine the file path
-      const filePath = typeToDefaultPath(blueprint.type, blueprint.name);
-      const fullPath = path.join(workspace, filePath);
 
       // Ensure directory exists
       const dir = path.dirname(fullPath);
@@ -95,22 +135,17 @@ async function autoCommit(
 
   try {
     // Configure git
-    await execAsync('git config user.name "LynxPrompt Action"', {
-      cwd: workspace,
-    });
-    await execAsync(
-      'git config user.email "lynxprompt@geiser.cloud"',
-      { cwd: workspace },
-    );
+    await git(['config', 'user.name', 'LynxPrompt Action'], workspace);
+    await git(['config', 'user.email', 'lynxprompt@geiser.cloud'], workspace);
 
     // Stage the files
     for (const file of files) {
-      await execAsync(`git add "${file}"`, { cwd: workspace });
+      await git(['add', '--', file], workspace);
     }
 
     // Check if there are staged changes
     try {
-      await execAsync('git diff --cached --quiet', { cwd: workspace });
+      await git(['diff', '--cached', '--quiet'], workspace);
       core.info('No changes to commit (files unchanged after staging).');
       return;
     } catch {
@@ -118,13 +153,13 @@ async function autoCommit(
     }
 
     // Commit
-    await execAsync(
-      'git commit -m "chore: update AI config files from LynxPrompt"',
-      { cwd: workspace },
+    await git(
+      ['commit', '-m', 'chore: update AI config files from LynxPrompt'],
+      workspace,
     );
 
     // Push
-    await execAsync('git push', { cwd: workspace });
+    await git(['push'], workspace);
     core.info('Changes committed and pushed successfully.');
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);

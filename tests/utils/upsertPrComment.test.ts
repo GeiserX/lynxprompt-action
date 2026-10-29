@@ -36,8 +36,27 @@ describe('upsertPrComment', () => {
     await upsertPrComment('test body');
 
     expect(core.warning).toHaveBeenCalledWith(
-      expect.stringContaining('GITHUB_TOKEN not available'),
+      expect.stringContaining('No GitHub token'),
     );
+  });
+
+  it('uses the token it is given before GITHUB_TOKEN', async () => {
+    delete process.env.GITHUB_TOKEN;
+    (github.context as any).payload = { pull_request: { number: 7 } };
+    const octokit = {
+      rest: {
+        issues: {
+          listComments: vi.fn().mockResolvedValue({ data: [] }),
+          createComment: vi.fn().mockResolvedValue({}),
+        },
+      },
+    };
+    vi.mocked(github.getOctokit).mockReturnValue(octokit as any);
+
+    await upsertPrComment('test body', 'ghs_input');
+
+    expect(github.getOctokit).toHaveBeenCalledWith('ghs_input');
+    expect(octokit.rest.issues.createComment).toHaveBeenCalled();
   });
 
   it('skips when not in a pull request context', async () => {

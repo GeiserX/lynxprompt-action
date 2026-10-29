@@ -70,29 +70,3 @@ export function buildBlueprintName(
   // Remove leading ./
   return normalized.replace(/^\.\//, '');
 }
-
-/**
- * Map a BlueprintType to the default file path where it should be written.
- */
-export function typeToDefaultPath(type: BlueprintType, name?: string): string {
-  switch (type) {
-    case 'AGENTS_MD':
-      return 'AGENTS.md';
-    case 'CLAUDE_MD':
-      return 'CLAUDE.md';
-    case 'AIDER_MD':
-      return 'AIDER.md';
-    case 'COPILOT_INSTRUCTIONS':
-      return '.github/copilot-instructions.md';
-    case 'WINDSURF_RULES':
-      return '.windsurfrules';
-    case 'CURSOR_RULES':
-      // Use the blueprint name if it looks like a path, otherwise generate one
-      if (name && name.includes('.cursor/rules/')) {
-        return name;
-      }
-      return `.cursor/rules/${name ?? 'default'}.mdc`;
-    default:
-      return name ?? 'unknown-config.md';
-  }
-}

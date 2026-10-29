@@ -13,21 +13,33 @@ export interface Blueprint {
   id: string;
   name: string;
   description: string;
-  type: BlueprintType;
+  type: BlueprintType | string;
   content: string;
   content_checksum: string;
   visibility: BlueprintVisibility;
   tags: string[];
+  hierarchy_id: string | null;
+  repository_path: string | null;
 }
 
 export interface BlueprintListItem {
   id: string;
   name: string;
   description: string;
-  type: BlueprintType;
+  /** The server knows more types than this action maps to files. */
+  type: BlueprintType | string;
   content_checksum: string;
   visibility: BlueprintVisibility;
   tags: string[];
+  hierarchy_id: string | null;
+  repository_path: string | null;
+}
+
+/** A hierarchy groups the blueprints of one repository. */
+export interface Hierarchy {
+  id: string;
+  name: string;
+  repository_root: string;
 }
 
 export interface CreateBlueprintRequest {
@@ -37,6 +49,9 @@ export interface CreateBlueprintRequest {
   content: string;
   visibility: BlueprintVisibility;
   tags?: string[];
+  hierarchy_id?: string;
+  repository_path?: string;
+  team_id?: string;
 }
 
 export interface UpdateBlueprintRequest {
@@ -46,6 +61,9 @@ export interface UpdateBlueprintRequest {
   content?: string;
   visibility?: BlueprintVisibility;
   tags?: string[];
+  team_id?: string;
+  /** The server answers 409 when the stored content no longer has this checksum. */
+  expected_checksum?: string;
 }
 
 export type ActionMode = 'sync' | 'validate' | 'generate' | 'diff';
@@ -55,7 +73,10 @@ export interface ActionInputs {
   token: string;
   apiUrl: string;
   files: string;
-  visibility: BlueprintVisibility;
+  /** Unset means PRIVATE for new blueprints and no change for existing ones. */
+  visibility?: BlueprintVisibility;
+  teamId?: string;
+  githubToken?: string;
   platforms: string[];
   failOnDrift: boolean;
   commitChanges: boolean;
@@ -79,7 +100,7 @@ export interface ValidationResult {
 export interface DiffResult {
   file: string;
   blueprintName: string;
-  type: BlueprintType;
+  type: BlueprintType | string;
   status: 'match' | 'drift' | 'local-only' | 'cloud-only';
   localChecksum?: string;
   cloudChecksum?: string;
