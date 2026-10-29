@@ -1,6 +1,6 @@
 {
   "name": "lynxprompt-action",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "GitHub Action to sync, validate, generate, and diff AI IDE configuration files with LynxPrompt",
   "main": "dist/index.js",
   "scripts": {
