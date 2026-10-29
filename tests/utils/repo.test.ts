@@ -49,6 +49,21 @@ describe('normalizeRemote', () => {
   });
 });
 
+describe('the extra vectors the CLI pins', () => {
+  it.each([
+    ['git://Example.ORG/Team/Repo.GIT', 'https://example.org/Team/Repo', 'a5f13a418d39a991'],
+    ['git@host.example:/owner/repo.git', 'https://host.example/owner/repo', 'c0afd4f70e32de36'],
+    ['git+ssh://git@host.example/owner/repo', 'https://host.example/owner/repo', 'c0afd4f70e32de36'],
+    ['https://host.example//owner/repo', 'https://host.example/owner/repo', 'c0afd4f70e32de36'],
+    ['https://host.example/', 'https://host.example', '566273f00e30ee90'],
+    [' /srv/git/repo.git/ ', '/srv/git/repo', '5e32d59440204430'],
+    ['github.com:GeiserX/LynxPrompt', CANONICAL, CANONICAL_ROOT],
+  ])('%s -> %s (%s)', (remote, normalized, root) => {
+    expect(normalizeRemote(remote)).toBe(normalized);
+    expect(repositoryRoot(workspaceWithRemote(remote))).toBe(root);
+  });
+});
+
 describe('repositoryRoot', () => {
   it.each(SAME_REPO)('%s hashes to the pinned root', (remote) => {
     expect(repositoryRoot(workspaceWithRemote(remote))).toBe(CANONICAL_ROOT);
